@@ -1,0 +1,346 @@
+
+Installing a Samba AD DC on Debian Bookworm (12) server
+
+
+This is one way to provision a Samba Active Directory domain on a Debian Bookworm server (so no GUI), using Samba from bookworm-backports. There are probably numerous other ways of doing this, but this is a tried and tested method.
+
+You first need to download the netinst.iso from https://cdimage.debian.org/debian-cd/current/amd64/iso-cd/debian-12.6.0-amd64-netinst.iso
+
+For testing purposes, I installed the OS in an Oracle Virtualbox VM, you do what you want :-)
+
+During the install I used the defaults except where noted, but you should also select your language and locale etc.
+
+I also used the following data:
+
+ Hostname:	testdc1
+ dns domain:	ad.home.arpa
+ ipaddress:	192.168.1.201
+ Gateway:	192.168.1.254 # my router, which is also a nameserver
+ username:	adminuser
+
+You will need to change them to match your setup, but do not use '.local' as the TLD, it is reserved for Bonjour on Mac computers and Avahi on Linux. If you own a registered domain, use a subdomain of that, if you don't own a domain, then I suggest you go with the suggest 'home.arpa', that is what it is there for.  
+
+Start the installation:
+
+Select 'Advanced options', then 'Expert install'
+
+You will be asked various questions, just press 'Enter' for most, apart for the following ones:
+
+Configure the network --> Auto-configure networking --> <No>
+
+You will now be asked for network information to use, I used the following:
+
+ IP address		192.168.1.201
+ Netmask		255.255.255.0
+ Gateway		192.168.1.254
+ Name server addresses	192.168.1.254
+ Hostname		testdc1
+ Domain name		ad.home.arpa
+
+Do not allow root to login, create a user and use sudo instead:
+Set up users and passwords --> Allow login as root --> <No>
+Full name for the new user --> adminuser
+Username for your account --> adminuser
+Choose a password for the new user --> a really good password
+Re-enter password to verify --> the same password again
+
+Under 'Partition Disks', I just used the defaults as this was just a test install, you may wish to setup different partitions, that is down to you, but do not forget/miss this:
+
+Write the changes to disks? --> <Yes>
+
+The base system will now be installed, this will take some time.
+
+Once the base system is installed the installation will carry on.
+
+Configure the package manager --> Use non-free software? --> <Yes>
+
+You will now be asked to select which services to install, to get the latest Samba packages, you need to use backported software.
+
+Services to use --> down arrow to 'backported software' and select with the spacebar, then press 'Enter'
+
+You will now be asked to select which software to install, because this is a server, I did not install a GUI and all that entails.
+
+Select and install software --> Choose software to install --> using the arrow keys to move, ensure that only the SSH & standard system utilies are selected. you should end up with this:
+
+ [ ] Debian desktop environment
+ [ ] ... GNOME
+ [ ] ... xfce
+ [ ] ... GNOME Flashback
+ [ ] ... KDE Plasma
+ [ ] ... Cinnamon
+ [ ] ... MATE
+ [ ] ... LXDE
+ [ ] ... LXQt
+ [ ] web server
+ [*] SSH server
+ [*] standard system utilities
+
+NOTE: you use the spacebar to select/deselect options.
+
+Once complete, press 'Enter'.
+
+Configuring grub-pc --> Device for boot loader installation --> down arrow to your device, on my test system it was:
+/dev/sda
+Then press 'Enter'
+
+The install should now finish up and then reboot, once rebooted, you can either log back in as adminuser or connect via SSH as adminuser, I went with the latter.
+
+ xxxxxxxxxxx@yyyyyyyyyyy:~$ ssh adminuser@192.168.1.201
+ The authenticity of host '192.168.1.201 (192.168.1.201)' can't be established.
+ ED25519 key fingerprint is SHA256:FHNvTjo+j17Iu8ytPh+HsVLxaOzfaVEVQdnsx1SUxRs.
+ This key is not known by any other names.
+ Are you sure you want to continue connecting (yes/no/[fingerprint])? yes
+
+Enter 'yes' here then press 'Enter'
+
+ Warning: Permanently added '192.168.1.201' (ED25519) to the list of known hosts.
+ adminuser@192.168.1.201's password: # Enter the password for adminuser you created earlier
+ Linux testdc1 6.1.0-23-amd64 #1 SMP PREEMPT_DYNAMIC Debian 6.1.99-1 (2024-07-15) x86_64
+ 
+ The programs included with the Debian GNU/Linux system are free software;
+ the exact distribution terms for each program are described in the
+ individual files in /usr/share/doc/*/copyright.
+ 
+ Debian GNU/Linux comes with ABSOLUTELY NO WARRANTY, to the extent
+ permitted by applicable law.
+ adminuser@testdc1:~$ 
+
+You should now be be logged into your new Debian 12 computer as 'adminuser'.
+
+Now run the following commands:
+
+ adminuser@testdc1:~$ hostname -s
+ testdc1
+ 
+ adminuser@testdc1:~$ hostname -d
+ ad.home.arpa
+
+ adminuser@testdc1:~$ hostname -f
+ testdc1.ad.home.arpa
+ 
+ adminuser@testdc1:~$ hostname -i
+ 192.168.1.201
+ 
+ adminuser@testdc1:~$ hostname -I
+ 192.168.1.201
+  
+ adminuser@testdc1:~$ ping -c1 www.google.com
+ PING forcesafesearch.google.com (216.239.38.120) 56(84) bytes of data.
+ 64 bytes from any-in-2678.1e100.net (216.239.38.120): icmp_seq=1 ttl=117 time=16.4 ms
+ 
+ --- forcesafesearch.google.com ping statistics ---
+ 1 packets transmitted, 1 received, 0% packet loss, time 0ms
+ rtt min/avg/max/mdev = 16.367/16.367/16.367/0.000 ms
+
+You should get back similar results as above, if you didn't, something went very badly wrong during the install.
+
+Now to setup and provision a Samba AD DC
+
+You will need to install these packages:
+samba samba-ad-dc smbclient winbind libnss-winbind libpam-winbind chrony ldb-tools krb5-user python3-setproctitle
+
+ sudo apt install -t bookworm-backports samba samba-ad-dc smbclient winbind libnss-winbind libpam-winbind chrony ldb-tools krb5-user python3-setproctitle -y
+
+NOTE: the '-t bookworm-backports' ensures you get the latest version of Samba possible.
+
+When prompted, just press 'Enter'
+
+Once the software as been installed, you need to stop and mask the nmbd, smbd and winbind binaries and unmask the samba binary:
+
+ sudo systemctl stop nmbd smbd winbind
+ sudo systemctl mask nmbd smbd winbind
+ sudo systemctl unmask samba-ad-dc
+
+Configure Chrony:
+
+First backup the existing chrony.conf file:
+ sudo cp /etc/chrony/chrony.conf{,.backup}
+
+Now configure it for your DC:
+
+ sudo nano /etc/chrony/chrony.conf
+
+It should look similar to this:
+
+ # Welcome to the chrony configuration file. See chrony.conf(5) for more
+ # information about useable directives.
+ 
+ # This directive specify the location of the file containing ID/key pairs for
+ # NTP authentication.
+ keyfile /etc/chrony/chrony.keys
+ 
+ # This directive specify the file into which chronyd will store the rate
+ # information.
+ driftfile /var/lib/chrony/chrony.drift
+ 
+ # Uncomment the following line to turn logging on.
+ #log tracking measurements statistics
+ 
+ # Log files location.
+ logdir /var/log/chrony
+ 
+ # Stop bad estimates upsetting machine clock.
+ maxupdateskew 100.0
+ 
+ # This directive tells 'chronyd' to parse the 'adjtime' file to find out if the
+ # real-time clock keeps local time or UTC. It overrides the 'rtconutc' directive.
+ hwclockfile /etc/adjtime
+ 
+ # This directive enables kernel synchronisation (every 11 minutes) of the
+ # real-time clock. Note that it can’t be used along with the 'rtcfile' directive.
+ rtcsync
+ 
+ # Step the system clock instead of slewing it if the adjustment is larger than
+ # one second, but only in the first three clock updates.
+ makestep 1 3
+ 
+ # ipaddress of this DC
+ bindcmdaddress 192.168.1.201
+ 
+ # The source, where we are receiving the time from
+ server 0.pool.ntp.org     iburst
+ server 1.pool.ntp.org     iburst
+ server 2.pool.ntp.org     iburst
+ 
+ # dns netmask
+ allow 192.168.1.0/24 
+ 
+ ntpsigndsocket  /var/lib/samba/ntp_signd/
+
+Provision the Active Directory domain
+
+Before you can provision the AD domain, you need to remove the existing smb.conf file, otherwise the provision will fail, the domain provision will generate a new smb.conf file. 
+
+ sudo mv /etc/samba/smb.conf /etc/samba/smb.orig
+
+You now need to find what your network device is named:
+
+ ip route | grep 'via' | awk '{print $5}'
+
+Now provision the domain and bind it to the device name found above (mine was enp0s3).
+
+ sudo samba-tool domain provision --option="interfaces=lo enp0s3" --option="bind interfaces only=yes" --use-rfc2307 --interactive
+
+You should just be able to press enter at the prompts, except for the last one, here you will have to enter a complex password (and then re-enter it again). 
+
+ Realm [AD.HOME.ARP]:  
+ Domain [AD]:  
+ Server Role (dc, member, standalone) [dc]:  
+ DNS backend (SAMBA_INTERNAL, BIND9_FLATFILE, BIND9_DLZ, NONE) [SAMBA_INTERNAL]:  
+ DNS forwarder IP address (write 'none' to disable forwarding) [192.168.1.254]:  
+ Administrator password: xxxxxxxxxx # <-- enter a complex password and remember it
+ Retype password: xxxxxxxxxx # retype the password
+
+It should end similar to this:
+
+ INFO 2024-08-20 11:36:27,819 pid:2939 /usr/lib/python3/dist-packages/samba/provision/__init__.py #2412: A Kerberos configuration suitable for Samba AD has been generated at /var/lib/samba/private/krb5.conf
+ INFO 2024-08-20 11:36:27,820 pid:2939 /usr/lib/python3/dist-packages/samba/provision/__init__.py #2414: Merge the contents of this file with your system krb5.conf or replace it with this one. Do not create a symlink!
+ INFO 2024-08-20 11:36:30,693 pid:2939 /usr/lib/python3/dist-packages/samba/provision/__init__.py #2084: Setting up fake yp server settings
+ INFO 2024-08-20 11:36:32,351 pid:2939 /usr/lib/python3/dist-packages/samba/provision/__init__.py #487: Once the above files are installed, your Samba AD server will be ready to use
+ INFO 2024-08-20 11:36:32,352 pid:2939 /usr/lib/python3/dist-packages/samba/provision/__init__.py #492: Server Role:           active directory domain controller
+ INFO 2024-08-20 11:36:32,353 pid:2939 /usr/lib/python3/dist-packages/samba/provision/__init__.py #493: Hostname:              testdc1
+ INFO 2024-08-20 11:36:32,354 pid:2939 /usr/lib/python3/dist-packages/samba/provision/__init__.py #494: NetBIOS Domain:        AD
+ INFO 2024-08-20 11:36:32,355 pid:2939 /usr/lib/python3/dist-packages/samba/provision/__init__.py #495: DNS Domain:            ad.home.arpa
+ INFO 2024-08-20 11:36:32,356 pid:2939 /usr/lib/python3/dist-packages/samba/provision/__init__.py #496: DOMAIN SID:            S-1-5-21-247358727-670170948-2698776030
+
+You now need to start the samba service, this will cause Samba to create the /var/lib/samba/ntp_signd directory.
+
+ sudo systemctl start samba-ad-dc.service
+
+Once the <code>ntp_signd</code> directory is created, you will need to change the ownership of it:
+
+ sudo chown root:_chrony /var/lib/samba/ntp_signd/
+
+Now restart chrony:
+
+ sudo systemctl restart chrony
+
+You now need to replace the existing krb5.conf file:
+
+First backup the existing file.
+
+ sudo cp /etc/krb5.conf{,.backup}
+
+Now copy the new krb5.conf into place
+
+ sudo cp /var/lib/samba/private/krb5.conf /etc/krb5.conf
+
+The DC needs to use itself for DNS, so you need to change a couple of files:
+
+ sudo sed -i 's/dns-nameservers 192.168.1.254/dns-nameservers 192.168.1.201/' /etc/network/interfaces
+ sudo sed -i 's/nameserver 192.168.1.254/nameserver 192.168.1.201/' /etc/resolv.conf
+
+You now need to reboot and then login again
+
+Once you have logged in again, test the dns:
+
+ ping -c1 testdc1
+
+You should get back something similar to this:
+
+ PING testdc1.ad.home.arpa (192.168.1.201) 56(84) bytes of data.
+ 64 bytes from testdc1.ad.home.arpa (192.168.1.201): icmp_seq=1 ttl=64 time=0.024 ms
+ 
+ --- testdc1.ad.home.arpa ping statistics ---
+ 1 packets transmitted, 1 received, 0% packet loss, time 0ms
+ rtt min/avg/max/mdev = 0.024/0.024/0.024/0.000 ms
+
+You should also be able to ping outside the domain, for instance 'google':
+
+ ping -c1 www.google.com
+
+You should get back something similar to this:
+
+ PING forcesafesearch.google.com (216.239.38.120) 56(84) bytes of data.
+ 64 bytes from any-in-2678.1e100.net (216.239.38.120): icmp_seq=1 ttl=117 time=16.1 ms
+ 
+ --- forcesafesearch.google.com ping statistics ---
+ 1 packets transmitted, 1 received, 0% packet loss, time 0ms
+ rtt min/avg/max/mdev = 16.055/16.055/16.055/0.000 ms
+
+If you now run 'wbinfo -u', it should produce this output:
+
+ AD\administrator
+ AD\guest
+ AD\krbtgt
+
+Running 'wbinfo -g' should produce this output:
+
+ AD\cert publishers
+ AD\ras and ias servers
+ AD\allowed rodc password replication group
+ AD\denied rodc password replication group
+ AD\dnsadmins
+ AD\enterprise read-only domain controllers
+ AD\domain admins
+ AD\domain users
+ AD\domain guests
+ AD\domain computers
+ AD\domain controllers
+ AD\schema admins
+ AD\enterprise admins
+ AD\group policy creator owners
+ AD\read-only domain controllers
+ AD\protected users
+ AD\dnsupdateproxy
+
+Running 'sudo kinit Administrator' should return this:
+
+ Password for Administrator@AD.HOME.ARPA: 
+ Warning: Your password will expire in 41 days on Tue 01 Oct 2024 11:35:58 BST
+ 
+Running 'sudo klist' should then produce something similar to this:
+
+ Ticket cache: FILE:/tmp/krb5cc_0
+ Default principal: Administrator@AD.HOME.ARPA
+ 
+ Valid starting     Expires            Service principal
+ 20/08/24 12:06:43  20/08/24 22:06:43  krbtgt/AD.HOME.ARPA@AD.HOME.ARPA
+ 	renew until 21/08/24 12:06:33
+
+NOTE: If you want your clients to be able to log into the DC, you will need to add the line 'template shell = /bin/bash' to the '[global]' part of the smb.conf.
+
+If you have got this far, you have a Samba AD DC.
+
+At this point you need to create AD users & groups, add a reversezone, etc. It would also be a good idea to add a second DC.
+
