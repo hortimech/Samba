@@ -1,0 +1,468 @@
+
+Samba 4 DC Installation on Fedora 40
+
+Install the operating system
+
+During this install I used the following information:
+
+Hostname:			f40dc1
+DNS domain			samba.home.arpa
+IPaddress:			192.168.1.211
+Netmask:			24
+Gateway:			192.168.1.254 # my router
+initial nameserver:		8.8.8.8
+Kerberos realm:			SAMBA.HOME.ARPA # always the DNS domain in uppercase
+Unix administrative user:	adminuser
+Network interface:		enp0s3
+
+Where ever you find the above information in this tutorial, you should change it for your data.
+
+Download the Fedora 40 server iso from:
+https://download.fedoraproject.org/pub/fedora/linux/releases/40/Server/x86_64/iso/Fedora-Server-netinst-x86_64-40-1.14.iso
+
+I installed into an Oracle virtualbox VM, YMMV.
+
+Start the install
+
+Select your language and locale.
+
+Click 'Installation Destination'
+Click Disk to use for installation, twice, then 'Done'
+
+Click 'Network & Host Name'
+Click 'Configure'
+Click 'IPv4 Settings'
+Change 'Method' to 'Manual'
+Click 'Add'
+Address:	192.168.1.211
+Netmask:	24
+Gateway:	192.168.1.254
+DNS servers:	8.8.8.8
+Search domains:	samba.home.arpa
+
+Click 'Save'
+
+In the bottom lefthand corner:
+Host Name: f40dc1.samba.home.arpa
+
+Click 'Apply'
+
+Top righthand corner, slide the 'blue' swich to the left and then back again
+
+Click 'Done'
+
+Click 'User Creation'
+
+In 'Full name' enter the user name to use as the admin user, I used 'adminuser', then enter the password, twice.
+
+Then click 'Done' (twice if you used a weak password)
+
+Now click 'Begin Installation'
+
+The install should start.
+
+Once the installation has completed, reboot and then login as Administrator
+
+I logged in via SSH, using the admin username I created during the install:
+
+rowland@devstation:~$ ssh adminuser@192.168.1.211
+The authenticity of host '192.168.1.211 (192.168.1.211)' can't be established.
+ED25519 key fingerprint is SHA256:qe0kmXnMdJgwbbO5BNrpoEiOgUhOsO0AMfc8WG3XM+Q.
+This key is not known by any other names.
+Are you sure you want to continue connecting (yes/no/[fingerprint])? yes ## Enter 'yes' here and press 'Enter'
+Warning: Permanently added '192.168.1.211' (ED25519) to the list of known hosts.
+adminuser@192.168.1.211's password: ## Enter the password you used when you created the admin user during the install and press 'Enter'
+Web console: https://f40dc1.samba.home.arpa:9090/ or https://192.168.1.211:9090/
+
+adminuser@f40dc1:~$ 
+
+adminuser@f40dc1:~$ echo '192.168.1.211 f40dc1.samba.home.arpa f40dc1' | sudo tee -a /etc/hosts
+
+Turn off the systemd-resolved stub resolver
+
+As Samba will need to listen on port 53, the stub resolver must be disabled by creating /etc/systemd/resolved.conf.d/stub-listener.conf
+
+[Resolve]
+DNSStubListener=no
+
+Now reboot and then when rebooted, log in again as the admin user.
+
+Before doing anything, check that all packages are up to date:
+
+sudo dnf update
+
+Now install the required packages:
+
+adminuser@f40dc1:~$ sudo dnf install samba samba-dc samba-winbind samba-winbind-clients krb5-workstation samba-client oddjob-mkhomedir
+
+It will display information about the packages it will install and at the end will be this:
+
+Is this ok [y/N]: 
+
+Press 'y', then 'Enter'
+
+Backup the existing chrony.conf file:
+
+adminuser@f40dc1:~$ sudo cp /etc/chrony.conf /etc/chrony.conf.orig 
+
+Now open the file in an editor:
+
+adminuser@f40dc1:~$ sudo nano /etc/chrony.conf
+
+Make it look like this:
+
+# Welcome to the chrony configuration file. See chrony.conf(5) for more
+# information about usuable directives.
+
+# This directive specify the location of the file containing ID/key pairs for
+# NTP authentication.
+#keyfile /etc/chrony.keys
+
+# This directive specify the file into which chronyd will store the rate
+# information.
+driftfile /var/lib/chrony/chrony.drift
+
+# Uncomment the following line to turn logging on.
+#log tracking measurements statistics
+
+# Log files location.
+logdir /var/log/chrony
+
+# Stop bad estimates upsetting machine clock.
+maxupdateskew 100.0
+
+# This directive tells 'chronyd' to parse the 'adjtime' file to find out if the
+# real-time clock keeps local time or UTC. It overrides the 'rtconutc' directive.
+hwclockfile /etc/adjtime
+
+# This directive enables kernel synchronisation (every 11 minutes) of the
+# real-time clock. Note that it can’t be used along with the 'rtcfile' directive.
+rtcsync
+
+# Step the system clock instead of slewing it if the adjustment is larger than
+# one second, but only in the first three clock updates.
+makestep 1 3
+
+# ipaddress of this DC
+bindcmdaddress 192.168.1.211
+
+# The source, where we are receiving the time from
+server 0.pool.ntp.org     iburst
+server 1.pool.ntp.org     iburst
+server 2.pool.ntp.org     iburst
+
+# dns netmask
+allow 192.168.1.0/24 
+
+ntpsigndsocket  /var/lib/samba/ntp_signd
+
+Move the smb.conf file out of the way, a new one will be created by the provision command.
+
+adminuser@f40dc1:~$ sudo mv /etc/samba/smb.conf /etc/samba/smb.conf.orig
+
+Now provision the domain:
+
+adminuser@f40dc1:~$ sudo samba-tool domain provision --use-rfc2307 --realm=SAMBA.HOME.ARPA --domain=SAMBA --adminpass=241155nov*
+
+The output from the above command should end something like this:
+
+INFO 2024-08-24 09:29:32,413 pid:1956 /usr/lib64/python3.12/site-packages/samba/provision/__init__.py #2406: The Kerberos KDC configuration for Samba AD is located at /var/lib/samba/private/kdc.conf
+INFO 2024-08-24 09:29:32,416 pid:1956 /usr/lib64/python3.12/site-packages/samba/provision/__init__.py #2412: A Kerberos configuration suitable for Samba AD has been generated at /var/lib/samba/private/krb5.conf
+INFO 2024-08-24 09:29:32,418 pid:1956 /usr/lib64/python3.12/site-packages/samba/provision/__init__.py #2414: Merge the contents of this file with your system krb5.conf or replace it with this one. Do not create a symlink!
+INFO 2024-08-24 09:29:39,794 pid:1956 /usr/lib64/python3.12/site-packages/samba/provision/__init__.py #2084: Setting up fake yp server settings
+INFO 2024-08-24 09:29:42,266 pid:1956 /usr/lib64/python3.12/site-packages/samba/provision/__init__.py #487: Once the above files are installed, your Samba AD server will be ready to use
+INFO 2024-08-24 09:29:42,266 pid:1956 /usr/lib64/python3.12/site-packages/samba/provision/__init__.py #492: Server Role:           active directory domain controller
+INFO 2024-08-24 09:29:42,266 pid:1956 /usr/lib64/python3.12/site-packages/samba/provision/__init__.py #493: Hostname:              f40dc1
+INFO 2024-08-24 09:29:42,267 pid:1956 /usr/lib64/python3.12/site-packages/samba/provision/__init__.py #494: NetBIOS Domain:        SAMBA
+INFO 2024-08-24 09:29:42,269 pid:1956 /usr/lib64/python3.12/site-packages/samba/provision/__init__.py #495: DNS Domain:            samba.home.arpa
+INFO 2024-08-24 09:29:42,270 pid:1956 /usr/lib64/python3.12/site-packages/samba/provision/__init__.py #496: DOMAIN SID:            S-1-5-21-1078754878-2074833571-3579912297
+
+Now that Samba is provisioned, you need to reconfigure a few files and set permissions.
+
+First, /var/kerberos/krb5kdc/kdc.conf
+
+Back this up with:
+
+adminuser@f40dc1:~$ sudo cp /var/kerberos/krb5kdc/kdc.conf /var/kerberos/krb5kdc/kdc.conf.orig
+
+Now open the file in an editor:
+
+adminuser@f40dc1:~$ sudo nano /var/kerberos/krb5kdc/kdc.conf
+
+make it look like this:
+
+[kdcdefaults]
+    kdc_ports = 88
+    kdc_tcp_ports = 88
+    kadmind_port = 464
+    restrict_anonymous_to_tgt = true
+    spake_preauth_kdc_challenge = edwards25519
+
+[realms]
+	SAMBA.HOME.ARPA = {
+		master_key_type = aes256-cts
+		default_principal_flags = +preauth
+	}
+
+	samba.home.arpa = {
+		master_key_type = aes256-cts
+		default_principal_flags = +preauth
+	}
+
+	SAMBA = {
+		master_key_type = aes256-cts
+		default_principal_flags = +preauth
+	}
+
+[dbmodules]
+	db_module_dir = /usr/lib64/krb5/plugins/kdb
+
+	SAMBA.HOME.ARPA = {
+		db_library = samba
+	}
+
+	samba.home.arpa = {
+		db_library = samba
+	}
+
+	SAMBA = {
+		db_library = samba
+	}
+
+[logging]
+	kdc = FILE:/var/log/samba/mit_kdc.log
+	admin_server = FILE:/var/log/samba/mit_kadmin.log
+
+Next the krb5.conf file:
+
+adminuser@f40dc1:~$ sudo cp /etc/krb5.conf /etc/krb5.conf.orig
+
+adminuser@f40dc1:~$ sudo nano /etc/krb5.conf
+
+Make it look like this
+
+[logging]
+    default = FILE:/var/log/krb5libs.log
+    kdc = FILE:/var/log/krb5kdc.log
+    admin_server = FILE:/var/log/kadmind.log
+
+[libdefaults]
+    default_realm = SAMBA.HOME.ARPA
+    dns_lookup_realm = false
+    dns_lookup_kdc = true
+    dns_canonicalize_hostname = fallback
+    spake_preauth_groups = edwards25519
+    renew_lifetime = 7d
+    default_ccache_name = KEYRING:persistent:%{uid}
+
+[realms]
+SAMBA.HOME.ARPA = {
+	default_domain = samba.home.arpa
+}
+
+[domain_realm]
+	f40dc1 = SAMBA.HOME.ARPA
+
+Remove an unrequired file:
+
+adminuser@f40dc1:~$ sudo rm -f /etc/krb5.conf.d/crypto-policies
+
+Create firewall rules:
+
+adminuser@f40dc1:~$ sudo firewall-cmd --zone=public --add-port=53/tcp --add-port=53/udp --permanent
+adminuser@f40dc1:~$ sudo firewall-cmd --zone=public --add-port=88/tcp --add-port=88/udp --permanent
+adminuser@f40dc1:~$ sudo firewall-cmd --zone=public --add-port=389/tcp --add-port=389/udp --permanent
+adminuser@f40dc1:~$ sudo firewall-cmd --zone=public --add-port=464/tcp --add-port=464/udp --permanent
+adminuser@f40dc1:~$ sudo firewall-cmd --zone=public --add-port=445/tcp --permanent
+adminuser@f40dc1:~$ sudo firewall-cmd --zone=public --add-port=135/tcp --permanent
+adminuser@f40dc1:~$ sudo firewall-cmd --zone=public --add-port=636/tcp --permanent
+adminuser@f40dc1:~$ sudo firewall-cmd --zone=public --add-port=3268/tcp --permanent
+adminuser@f40dc1:~$ sudo firewall-cmd --zone=public --add-port=3269/tcp --permanent
+adminuser@f40dc1:~$ sudo firewall-cmd --zone=public --add-port=49152-65535/tcp --permanent
+adminuser@f40dc1:~$ sudo systemctl restart firewalld
+
+Reconfigure the DNS resolution for the local machine.
+
+First, find the 'active' network interface:
+
+adminuser@f40dc1:~$ sudo nmcli | grep 'connected to' | awk '{print $NF}'
+enp0s3
+
+Now set up /etc/resolv.conf correctly:
+
+adminuser@f40dc1:~$ sudo nmcli c modify 'enp0s3' +ipv4.dns 192.168.1.211
+adminuser@f40dc1:~$ sudo nmcli c modify 'enp0s3' -ipv4.dns 8.8.8.8
+adminuser@f40dc1:~$ sudo systemctl restart NetworkManager
+
+Check /etc/resolv.conf:
+
+adminuser@f40dc1:~$ sudo cat /etc/resolv.conf
+
+It should now look similar to this:
+
+# This is /run/systemd/resolve/resolv.conf managed by man:systemd-resolved(8).
+# Do not edit.
+#
+# This file might be symlinked as /etc/resolv.conf. If you're looking at
+# /etc/resolv.conf and seeing this text, you have followed the symlink.
+#
+# This is a dynamic resolv.conf file for connecting local clients directly to
+# all known uplink DNS servers. This file lists all configured search domains.
+#
+# Third party programs should typically not access this file directly, but only
+# through the symlink at /etc/resolv.conf. To manage man:resolv.conf(5) in a
+# different way, replace this symlink by a static file or a different symlink.
+#
+# See man:systemd-resolved.service(8) for details about the supported modes of
+# operation for /etc/resolv.conf.
+
+nameserver 192.168.1.211
+search samba.home.arpa
+
+Now start the Samba AD DC:
+
+adminuser@f40dc1:~$ sudo systemctl start samba
+adminuser@f40dc1:~$ sudo systemctl enable samba
+Created symlink /etc/systemd/system/multi-user.target.wants/samba.service → /usr/lib/systemd/system/samba.service.
+
+Now that Samba has started, the directory /var/lib/samba/ntp_signd will have been created, if you check its permissions, it will look similar to this:
+
+adminuser@f40dc1:~$ ls -ld /var/lib/samba/ntp_signd/
+drwxr-x---. 2 root root 20 Aug 24 10:29 /var/lib/samba/ntp_signd/
+
+However, chrony needs access to the /var/lib/samba/ntp_signd directory
+
+To allow chrony access, you need to change the group:
+
+adminuser@f40dc1:~$ sudo chown root:chrony /var/lib/samba/ntp_signd/
+
+If you recheck the permissions, you should find something like this:
+
+adminuser@f40dc1:~$ ls -ld /var/lib/samba/ntp_signd/
+drwxr-x---. 2 root chrony 20 Aug 24 10:29 /var/lib/samba/ntp_signd/
+
+Now restart chrony:
+
+adminuser@f40dc1:~$ sudo systemctl restart chronyd
+
+Stop and disable systemd-homed:
+
+adminuser@f40dc1:~$ sudo systemctl stop systemd-homed
+adminuser@f40dc1:~$ sudo systemctl disable systemd-homed
+Removed "/etc/systemd/system/sockets.target.wants/systemd-userdbd.socket".
+Removed "/etc/systemd/system/multi-user.target.wants/systemd-homed.service".
+Removed "/etc/systemd/system/dbus-org.freedesktop.home1.service".
+Removed "/etc/systemd/system/systemd-homed.service.wants/systemd-homed-activate.service".
+adminuser@f40dc1:~$ sudo systemctl mask systemd-homed
+Created symlink /etc/systemd/system/systemd-homed.service → /dev/null.
+
+Now check the users created by the provision:
+
+adminuser@f40dc1:~$ wbinfo -u
+SAMBA\administrator
+SAMBA\guest
+SAMBA\krbtgt
+
+And the groups:
+
+adminuser@f40dc1:~$ wbinfo -g
+SAMBA\cert publishers
+SAMBA\ras and ias servers
+SAMBA\allowed rodc password replication group
+SAMBA\denied rodc password replication group
+SAMBA\dnsadmins
+SAMBA\enterprise read-only domain controllers
+SAMBA\domain admins
+SAMBA\domain users
+SAMBA\domain guests
+SAMBA\domain computers
+SAMBA\domain controllers
+SAMBA\schema admins
+SAMBA\enterprise admins
+SAMBA\group policy creator owners
+SAMBA\read-only domain controllers
+SAMBA\protected users
+SAMBA\dnsupdateproxy
+
+Check the domain info:
+
+adminuser@f40dc1:~$ sudo net ads info
+LDAP server: 192.168.1.211
+LDAP server name: f40dc1.samba.home.arpa
+Workgroup: SAMBA
+Realm: SAMBA.HOME.ARPA
+Bind Path: dc=SAMBA,dc=HOME,dc=ARPA
+LDAP port: 389
+Server time: Sat, 24 Aug 2024 10:46:43 BST
+KDC server: 192.168.1.211
+Server time offset: 0
+Last machine account password change: Sat, 24 Aug 2024 09:29:05 BST
+
+Check the shares available:
+
+adminuser@f40dc1:~$ smbclient -NL localhost
+Anonymous login successful
+
+	Sharename       Type      Comment
+	---------       ----      -------
+tstream_smbXcli_np_destructor: cli_close failed on pipe srvsvc. Error was NT_STATUS_IO_TIMEOUT
+cli_rpc_pipe_open_noauth: rpc_pipe_bind for pipe srvsvc failed with error NT_STATUS_IO_TIMEOUT
+SMB1 disabled -- no workgroup available
+        
+If you get the above, just run the command again.
+
+adminuser@f40dc1:~$ smbclient -NL localhost
+Anonymous login successful
+
+	Sharename       Type      Comment
+	---------       ----      -------
+	sysvol          Disk      
+	netlogon        Disk      
+	IPC$            IPC       IPC Service (Samba 4.20.4)
+SMB1 disabled -- no workgroup available
+
+Now get a kerberos ticket for Administrator:
+
+adminuser@f40dc1:~$ sudo kinit Administrator
+Password for Administrator@SAMBA.HOME.ARPA: ## enter the password set during the provision
+
+adminuser@f40dc1:~$ sudo klist
+Ticket cache: KEYRING:persistent:0:0
+Default principal: Administrator@SAMBA.HOME.ARPA
+
+Valid starting     Expires            Service principal
+24/08/24 10:52:18  24/08/24 20:52:18  krbtgt/SAMBA.HOME.ARPA@SAMBA.HOME.ARPA
+	renew until 31/08/24 10:52:09
+
+Now modify /etc/nsswitch.conf to use winbind:
+
+adminuser@f40dc1:~$ sudo authselect select winbind with-mkhomedir --force
+Backup stored at /var/lib/authselect/backups/2024-08-24-09-56-08.K7X8Lk
+Profile "winbind" was selected.
+
+Make sure that winbind service is configured and enabled. See winbind documentation for more information.
+ 
+- with-mkhomedir is selected, make sure pam_oddjob_mkhomedir module
+  is present and oddjobd service is enabled and active
+  - systemctl enable --now oddjobd.service
+
+adminuser@f40dc1:~$ sudo systemctl enable --now oddjobd.service
+Created symlink /etc/systemd/system/multi-user.target.wants/oddjobd.service → /usr/lib/systemd/system/oddjobd.service.
+
+adminuser@f40dc1:~$ sudo systemctl start oddjobd.service
+
+# Set selinux contexts
+adminuser@f40dc1:~$ sudo setsebool -P samba_create_home_dirs=on \
+  samba_domain_controller=on \
+  samba_enable_home_dirs=on \
+  samba_portmapper=on \
+  use_samba_home_dirs=on
+
+Finally check if Administrator is known to Unix:
+
+adminuser@f40dc1:~$ getent passwd administrator
+SAMBA\administrator:*:0:100::/home/SAMBA/administrator:/bin/false
+
+If you have got this far, you have a Samba AD DC running on Fedora 40, but I would not recommend using it in production, this is because it is using MIT kerberos, which is still classified as experimental and will not get security updates.
+
+
