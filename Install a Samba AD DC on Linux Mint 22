@@ -1,0 +1,736 @@
+
+Install a Samba AD DC on Linux Mint 22
+
+
+choose language etc
+
+create a user: I used 'adminuser'
+
+lm22dc
+
+Reboot and fully update:
+sudo apt update
+sudo apt upgrade
+
+Now install SSH
+
+sudo apt install openssh-server
+
+Find the current ipaddress:
+
+hostname -I
+192.168.1.125
+
+This address will have been set by DHCP server and could change, you do not want this to happen on an AD DC, the DC should be authoritative for the dns domain.
+To stop this ever happening, set a fixed ipaddress on the computer that will become a DC.
+
+Optional: I switched to a SSH terminal here:
+ssh adminuser@192.168.1.125
+The authenticity of host '192.168.1.125 (192.168.1.125)' can't be established.
+ED25519 key fingerprint is SHA256:ySqljy8lO/4V7WkazXt0YeF91WZ0bKoG5qvgwpdDU4I.
+This key is not known by any other names.
+Are you sure you want to continue connecting (yes/no/[fingerprint])? yes
+Warning: Permanently added '192.168.1.125' (ED25519) to the list of known hosts.
+adminuser@192.168.1.125's password: 
+
+adminuser@lm22dc:~$ 
+
+You need the following information to set a fixed ipaddress:
+
+The fixed ipaddress to use and the subnet mask:		I used 192.168.1.206 and 255.255.255.0
+The gateway to use:					I used my router 192.168.1.254
+The nameservers to use:					This could be your router, but here I used googles (8.8.8.8 8.8.4.4)
+
+Click the network icon on the lower taskbar (near right hand corner):
+Select network settings
+Click the 'gear' (lower right hand corner)
+Select 'IPv4':
+	Change 'Addresses' to 'Manual'
+ 
+A box will open:
+
+Under Addresses:
+	Address:	192.168.1.206
+	Netmask:	255.255.255.0
+	Gateway:	192.168.1.254
+
+Under 'DNS':
+	Slide 'Automatic' to the left
+
+	Server: 8.8.8.8
+	Click the '+' sign
+	Server: 8.8.4.4
+
+Under 'Routes':
+	Slide 'Automatic' to the left
+
+Then click 'Apply'
+
+This will take you back to the previous box, slide the 'blue' slider to the left and then back tp the left
+
+Reboot
+
+Now check dns with the following commands
+
+adminuser@lm22dc:~$ hostname -s
+lm22dc
+adminuser@lm22dc:~$ hostname -d
+adminuser@lm22dc:~$ hostname -f
+lm22dc
+adminuser@lm22dc:~$ hostname -i
+127.0.1.1
+adminuser@lm22dc:~$ hostname -I
+192.168.1.206 
+
+The only missing information is the dns domain name, so you need to set one. It is also using 127.0.1.1 as the ipaddress
+
+Do not use '.local', it is reserved for Bonjour (on Macs) and Avahi (on Linux).
+If you own a domain name use a subdomain of that, e.g. If you own 'example.com', use 'ad.example.com'.
+If all else fails use something like 'ad.home.arpa', 'home.arpa' is reserved for such purposes.
+
+It is very simple to add the domain name, just edit /etc/hosts.
+
+On my machine, it looks like this:
+
+adminuser@lm22dc:~$ sudo nano /etc/hosts
+
+127.0.0.1       localhost
+127.0.1.1       lm22dc
+
+# The following lines are desirable for IPv6 capable hosts
+::1     ip6-localhost ip6-loopback
+fe00::0 ip6-localnet
+ff00::0 ip6-mcastprefix
+ff02::1 ip6-allnodes
+ff02::2 ip6-allrouters
+
+Modify the '127.0.1.1' line to this:
+
+192.168.1.206       lm22dc.ad.home.arpa lm22dc
+
+Now run the commands again:
+
+adminuser@lm22dc:~$ hostname -s
+lm22dc
+adminuser@lm22dc:~$ hostname -d
+ad.home.arpa
+adminuser@lm22dc:~$ hostname -f
+lm22dc.ad.home.arpa
+adminuser@lm22dc:~$ hostname -i
+192.168.1.206
+adminuser@lm22dc:~$ hostname -I
+192.168.1.206 
+
+You now should have a dns domain.
+
+This just leaves /etc/resolv.conf, which if you look at it, will probably contain this:
+
+# This is /run/systemd/resolve/stub-resolv.conf managed by man:systemd-resolved(8).
+# Do not edit.
+#
+# This file might be symlinked as /etc/resolv.conf. If you're looking at
+# /etc/resolv.conf and seeing this text, you have followed the symlink.
+#
+# This is a dynamic resolv.conf file for connecting local clients to the
+# internal DNS stub resolver of systemd-resolved. This file lists all
+# configured search domains.
+#
+# Run "resolvectl status" to see details about the uplink DNS servers
+# currently in use.
+#
+# Third party programs should typically not access this file directly, but only
+# through the symlink at /etc/resolv.conf. To manage man:resolv.conf(5) in a
+# different way, replace this symlink by a static file or a different symlink.
+#
+# See man:systemd-resolved.service(8) for details about the supported modes of
+# operation for /etc/resolv.conf.
+
+nameserver 127.0.0.53
+options edns0 trust-ad
+search .
+
+Not good (well for a DC it isn't good in my opinion)
+
+So first thing, remove systemd-resolved
+
+adminuser@lm22dc:~$ sudo apt purge systemd-resolved
+
+Finally, edit /etc/resolv.conf and make it look like this:
+
+adminuser@lm22dc:~$ sudo nano /etc/resolv.conf
+
+nameserver 8.8.8.8
+nameserver 8.8.4.4
+search ad.home.arpa
+
+Linux mint 22 comes with Samba 4.19.5, we can very easily do better than that by using a ppa provide by the Debian Samba maintainer:
+
+Create a file 
+
+sudo nano /etc/apt/sources.list.d/mjt.list
+
+It should contain this:
+
+deb http://www.corpit.ru/mjt/packages/samba noble/samba-4.21/
+
+Install a package to get the required gpg key:
+
+adminuser@lm22dc:~$ sudo apt install debian-keyring
+
+Now install the key:
+
+adminuser@lm22dc:~$ sudo apt-key adv --keyserver keyserver.ubuntu.com --recv-keys 701B4F6B1A693E59
+
+adminuser@lm22dc:~$ sudo apt update
+adminuser@lm22dc:~$ sudo apt upgrade
+
+You are now ready to install Samba and then provision it as an AD DC.
+
+adminuser@lm22dc:~$ sudo apt install samba samba-ad-dc winbind libnss-winbind libpam-winbind chrony ldb-tools krb5-user
+
+Just press <ENTER>, when prompted.
+
+sudo systemctl stop nmbd smbd winbind
+sudo systemctl mask nmbd smbd winbind
+sudo systemctl unmask samba-ad-dc
+
+sudo cp /etc/chrony/chrony.conf{,.backup}
+
+sudo nano /etc/chrony/chrony.conf
+
+Make it look like this:
+------- start -------
+# Welcome to the chrony configuration file. See chrony.conf(5) for more
+# information about usable directives.
+
+# Include configuration files found in /etc/chrony/conf.d.
+confdir /etc/chrony/conf.d
+
+# Use Debian vendor zone.
+#pool 2.debian.pool.ntp.org iburst
+
+# Use time sources from DHCP.
+#sourcedir /run/chrony-dhcp
+
+# Use NTP sources found in /etc/chrony/sources.d.
+sourcedir /etc/chrony/sources.d
+
+# This directive specify the location of the file containing ID/key pairs for
+# NTP authentication.
+keyfile /etc/chrony/chrony.keys
+
+# This directive specify the file into which chronyd will store the rate
+# information.
+driftfile /var/lib/chrony/chrony.drift
+
+# Save NTS keys and cookies.
+ntsdumpdir /var/lib/chrony
+
+# Uncomment the following line to turn logging on.
+log tracking measurements statistics
+
+# Log files location.
+logdir /var/log/chrony
+
+# Stop bad estimates upsetting machine clock.
+maxupdateskew 100.0
+
+# This directive tells 'chronyd' to parse the 'adjtime' file to find out if the
+# real-time clock keeps local time or UTC. It overrides the 'rtconutc' directive.
+hwclockfile /etc/adjtime
+
+# This directive enables kernel synchronisation (every 11 minutes) of the
+# real-time clock. Note that it can’t be used along with the 'rtcfile' directive.
+rtcsync
+
+# Step the system clock instead of slewing it if the adjustment is larger than
+# one second, but only in the first three clock updates.
+makestep 1 3
+
+# ipaddress of this DC
+bindcmdaddress 192.168.1.206
+
+# Get TAI-UTC offset and leap seconds from the system tz database.
+# This directive must be commented out when using time sources serving
+# leap-smeared time.
+leapsectz right/UTC
+
+# The source, where we are receiving the time from
+server 0.pool.ntp.org     iburst
+server 1.pool.ntp.org     iburst
+server 2.pool.ntp.org     iburst
+
+# dns netmask
+allow 192.168.1.0/24 
+
+ntpsigndsocket  /var/lib/samba/ntp_signd
+-------- end ---------
+
+sudo systemctl restart chrony
+
+You need to move the existing smb.conf file to let the domain provision tool generate a new one. 
+
+sudo mv /etc/samba/smb.conf /etc/samba/smb.orig
+
+Find your network device name:
+
+ip route | grep 'via' | awk '{print $5}'
+
+provision the domain and bind it to device name found above (mine was enp0s3).
+
+sudo samba-tool domain provision --option="interfaces=lo enp0s3" --option="bind interfaces only=yes" --interactive
+
+You should just be able to press enter at the prompts, except for the last one, here you will have to enter a complex password (and then re-enter it again). 
+
+Realm [AD.HOME.ARPA]:
+Domain [AD]:
+Server Role (dc, member, standalone) [dc]:
+DNS backend (SAMBA_INTERNAL, BIND9_FLATFILE, BIND9_DLZ, NONE) [SAMBA_INTERNAL]:
+DNS forwarder IP address (write 'none' to disable forwarding) [8.8.8.8]:
+Administrator password: 
+Retype password: 
+
+While the command runs, it should output information similar to this:
+
+INFO 2024-10-01 16:30:38,214 pid:7584 /usr/lib/python3/dist-packages/samba/provision/__init__.py #2115: Looking up IPv4 addresses
+INFO 2024-10-01 16:30:38,216 pid:7584 /usr/lib/python3/dist-packages/samba/provision/__init__.py #2132: Looking up IPv6 addresses
+WARNING 2024-10-01 16:30:38,219 pid:7584 /usr/lib/python3/dist-packages/samba/provision/__init__.py #2139: No IPv6 address will be assigned
+INFO 2024-10-01 16:30:38,495 pid:7584 /usr/lib/python3/dist-packages/samba/provision/__init__.py #2305: Setting up share.ldb
+INFO 2024-10-01 16:30:42,420 pid:7584 /usr/lib/python3/dist-packages/samba/provision/__init__.py #2309: Setting up secrets.ldb
+INFO 2024-10-01 16:30:45,129 pid:7584 /usr/lib/python3/dist-packages/samba/provision/__init__.py #2314: Setting up the registry
+INFO 2024-10-01 16:30:58,484 pid:7584 /usr/lib/python3/dist-packages/samba/provision/__init__.py #2317: Setting up the privileges database
+INFO 2024-10-01 16:31:04,567 pid:7584 /usr/lib/python3/dist-packages/samba/provision/__init__.py #2320: Setting up idmap db
+INFO 2024-10-01 16:31:08,788 pid:7584 /usr/lib/python3/dist-packages/samba/provision/__init__.py #2327: Setting up SAM db
+INFO 2024-10-01 16:31:09,781 pid:7584 /usr/lib/python3/dist-packages/samba/provision/__init__.py #887: Setting up sam.ldb partitions and settings
+INFO 2024-10-01 16:31:09,784 pid:7584 /usr/lib/python3/dist-packages/samba/provision/__init__.py #899: Setting up sam.ldb rootDSE
+INFO 2024-10-01 16:31:10,550 pid:7584 /usr/lib/python3/dist-packages/samba/provision/__init__.py #1315: Pre-loading the Samba 4 and AD schema
+Unable to determine the DomainSID, can not enforce uniqueness constraint on local domainSIDs
+
+INFO 2024-10-01 16:31:12,026 pid:7584 /usr/lib/python3/dist-packages/samba/provision/__init__.py #1392: Adding DomainDN: DC=ad,DC=home,DC=arpa
+INFO 2024-10-01 16:31:12,838 pid:7584 /usr/lib/python3/dist-packages/samba/provision/__init__.py #1424: Adding configuration container
+INFO 2024-10-01 16:31:13,829 pid:7584 /usr/lib/python3/dist-packages/samba/provision/__init__.py #1439: Setting up sam.ldb schema
+INFO 2024-10-01 16:31:15,989 pid:7584 /usr/lib/python3/dist-packages/samba/provision/__init__.py #1459: Setting up sam.ldb configuration data
+INFO 2024-10-01 16:31:16,069 pid:7584 /usr/lib/python3/dist-packages/samba/provision/__init__.py #1501: Setting up display specifiers
+INFO 2024-10-01 16:31:16,758 pid:7584 /usr/lib/python3/dist-packages/samba/provision/__init__.py #1509: Modifying display specifiers and extended rights
+INFO 2024-10-01 16:31:16,778 pid:7584 /usr/lib/python3/dist-packages/samba/provision/__init__.py #1516: Adding users container
+INFO 2024-10-01 16:31:16,780 pid:7584 /usr/lib/python3/dist-packages/samba/provision/__init__.py #1522: Modifying users container
+INFO 2024-10-01 16:31:16,780 pid:7584 /usr/lib/python3/dist-packages/samba/provision/__init__.py #1525: Adding computers container
+INFO 2024-10-01 16:31:16,781 pid:7584 /usr/lib/python3/dist-packages/samba/provision/__init__.py #1531: Modifying computers container
+INFO 2024-10-01 16:31:16,781 pid:7584 /usr/lib/python3/dist-packages/samba/provision/__init__.py #1535: Setting up sam.ldb data
+INFO 2024-10-01 16:31:16,850 pid:7584 /usr/lib/python3/dist-packages/samba/provision/__init__.py #1566: Setting up well known security principals
+INFO 2024-10-01 16:31:16,865 pid:7584 /usr/lib/python3/dist-packages/samba/provision/__init__.py #1580: Setting up sam.ldb users and groups
+INFO 2024-10-01 16:31:16,984 pid:7584 /usr/lib/python3/dist-packages/samba/provision/__init__.py #1588: Setting up self join
+Repacking database from v1 to v2 format (first record CN=RID-Allocation-Pool,CN=Schema,CN=Configuration,DC=ad,DC=home,DC=arpa)
+Repack: re-packed 10000 records so far
+Repacking database from v1 to v2 format (first record CN=mSMQMigratedUser-Display,CN=411,CN=DisplaySpecifiers,CN=Configuration,DC=ad,DC=home,DC=arpa)
+Repacking database from v1 to v2 format (first record CN=13d15cf0-e6c8-11d6-9793-00c04f613221,CN=Operations,CN=DomainUpdates,CN=System,DC=ad,DC=home,DC=arpa)
+INFO 2024-10-01 16:31:29,809 pid:7584 /usr/lib/python3/dist-packages/samba/provision/sambadns.py #1196: Adding DNS accounts
+INFO 2024-10-01 16:31:32,262 pid:7584 /usr/lib/python3/dist-packages/samba/provision/sambadns.py #1230: Creating CN=MicrosoftDNS,CN=System,DC=ad,DC=home,DC=arpa
+INFO 2024-10-01 16:31:32,291 pid:7584 /usr/lib/python3/dist-packages/samba/provision/sambadns.py #1243: Creating DomainDnsZones and ForestDnsZones partitions
+INFO 2024-10-01 16:31:33,996 pid:7584 /usr/lib/python3/dist-packages/samba/provision/sambadns.py #1248: Populating DomainDnsZones and ForestDnsZones partitions
+Repacking database from v1 to v2 format (first record DC=h.root-servers.net,DC=RootDNSServers,CN=MicrosoftDNS,DC=DomainDnsZones,DC=ad,DC=home,DC=arpa)
+Repacking database from v1 to v2 format (first record DC=_ldap._tcp.Default-First-Site-Name._sites.dc,DC=_msdcs.ad.home.arpa,CN=MicrosoftDNS,DC=ForestDnsZones,DC=ad,DC=home,DC=arpa)
+INFO 2024-10-01 16:31:39,186 pid:7584 /usr/lib/python3/dist-packages/samba/provision/__init__.py #2020: Setting up sam.ldb rootDSE marking as synchronized
+INFO 2024-10-01 16:31:39,795 pid:7584 /usr/lib/python3/dist-packages/samba/provision/__init__.py #2025: Fixing provision GUIDs
+Temporarily overriding 'dsdb:schema update allowed' setting
+Applied Forest Update 11: 27a03717-5963-48fc-ba6f-69faa33e70ed
+Applied Forest Update 54: 134428a8-0043-48a6-bcda-63310d9ec4dd
+Applied Forest Update 79: 21ae657c-6649-43c4-bbb3-7f184fdf58c1
+Applied Forest Update 80: dca8f425-baae-47cd-b424-e3f6c76ed08b
+Applied Forest Update 81: a662b036-dbbe-4166-b4ba-21abea17f9cc
+Applied Forest Update 82: 9d17b863-18c3-497d-9bde-45ddb95fcb65
+Applied Forest Update 83: 11c39bed-4bee-45f5-b195-8da0e05b573a
+Applied Forest Update 84: 4664e973-cb20-4def-b3d5-559d6fe123e0
+Applied Forest Update 85: 2972d92d-a07a-44ac-9cb0-bf243356f345
+Applied Forest Update 86: 09a49cb3-6c54-4b83-ab20-8370838ba149
+Applied Forest Update 87: 77283e65-ce02-4dc3-8c1e-bf99b22527c2
+Applied Forest Update 88: 0afb7f53-96bd-404b-a659-89e65c269420
+Applied Forest Update 89: c7f717ef-fdbe-4b4b-8dfc-fa8b839fbcfa
+Applied Forest Update 90: 00232167-f3a4-43c6-b503-9acb7a81b01c
+Applied Forest Update 91: 73a9515b-511c-44d2-822b-444a33d3bd33
+Applied Forest Update 92: e0c60003-2ed7-4fd3-8659-7655a7e79397
+Applied Forest Update 93: ed0c8cca-80ab-4b6b-ac5a-59b1d317e11f
+Applied Forest Update 94: b6a6c19a-afc9-476b-8994-61f5b14b3f05
+Applied Forest Update 95: defc28cd-6cb6-4479-8bcb-aabfb41e9713
+Applied Forest Update 96: d6bd96d4-e66b-4a38-9c6b-e976ff58c56d
+Applied Forest Update 97: bb8efc40-3090-4fa2-8a3f-7cd1d380e695
+Applied Forest Update 98: 2d6abe1b-4326-489e-920c-76d5337d2dc5
+Applied Forest Update 99: 6b13dfb5-cecc-4fb8-b28d-0505cea24175
+Applied Forest Update 100: 92e73422-c68b-46c9-b0d5-b55f9c741410
+Applied Forest Update 101: c0ad80b4-8e84-4cc4-9163-2f84649bcc42
+Applied Forest Update 102: 992fe1d0-6591-4f24-a163-c820fcb7f308
+Applied Forest Update 103: ede85f96-7061-47bf-b11b-0c0d999595b5
+Applied Forest Update 104: ee0f3271-eb51-414a-bdac-8f9ba6397a39
+Applied Forest Update 105: 587d52e0-507e-440e-9d67-e6129f33bb68
+Applied Forest Update 106: ce24f0f6-237e-43d6-ac04-1e918ab04aac
+Applied Forest Update 107: 7f77d431-dd6a-434f-ae4d-ce82928e498f
+Applied Forest Update 108: ba14e1f6-7cd1-4739-804f-57d0ea74edf4
+Applied Forest Update 109: 156ffa2a-e07c-46fb-a5c4-fbd84a4e5cce
+Applied Forest Update 110: 7771d7dd-2231-4470-aa74-84a6f56fc3b6
+Applied Forest Update 111: 49b2ae86-839a-4ea0-81fe-9171c1b98e83
+Applied Forest Update 112: 1b1de989-57ec-4e96-b933-8279a8119da4
+Applied Forest Update 113: 281c63f0-2c9a-4cce-9256-a238c23c0db9
+Applied Forest Update 114: 4c47881a-f15a-4f6c-9f49-2742f7a11f4b
+Applied Forest Update 115: 2aea2dc6-d1d3-4f0c-9994-66c1da21de0f
+Applied Forest Update 116: ae78240c-43b9-499e-ae65-2b6e0f0e202a
+Applied Forest Update 117: 261b5bba-3438-4d5c-a3e9-7b871e5f57f0
+Applied Forest Update 118: 3fb79c05-8ea1-438c-8c7a-81f213aa61c2
+Applied Forest Update 119: 0b2be39a-d463-4c23-8290-32186759d3b1
+Applied Forest Update 120: f0842b44-bc03-46a1-a860-006e8527fccd
+Applied Forest Update 121: 93efec15-4dd9-4850-bc86-a1f2c8e2ebb9
+Applied Forest Update 122: 9e108d96-672f-40f0-b6bd-69ee1f0b7ac4
+Applied Forest Update 123: 1e269508-f862-4c4a-b01f-420d26c4ff8c
+Applied Forest Update 125: e1ab17ed-5efb-4691-ad2d-0424592c5755
+Applied Forest Update 126: 0e848bd4-7c70-48f2-b8fc-00fbaa82e360
+Applied Forest Update 127: 016f23f7-077d-41fa-a356-de7cfdb01797
+Applied Forest Update 128: 49c140db-2de3-44c2-a99a-bab2e6d2ba81
+Applied Forest Update 129: e0b11c80-62c5-47f7-ad0d-3734a71b8312
+Applied Forest Update 130: 2ada1a2d-b02f-4731-b4fe-59f955e24f71
+Applied Forest Update 131: b83818c1-01a6-4f39-91b7-a3bb581c3ae3
+Applied Forest Update 132: bbbb9db0-4009-4368-8c40-6674e980d3c3
+Applied Forest Update 133: f754861c-3692-4a7b-b2c2-d0fa28ed0b0b
+Applied Forest Update 134: d32f499f-3026-4af0-a5bd-13fe5a331bd2
+Applied Forest Update 135: 38618886-98ee-4e42-8cf1-d9a2cd9edf8b
+Applied Forest Update 136: 328092fb-16e7-4453-9ab8-7592db56e9c4
+Applied Forest Update 137: 3a1c887f-df0a-489f-b3f2-2d0409095f6e
+Applied Forest Update 138: 232e831f-f988-4444-8e3e-8a352e2fd411
+Applied Forest Update 139: ddddcf0c-bec9-4a5a-ae86-3cfe6cc6e110
+Applied Forest Update 140: a0a45aac-5550-42df-bb6a-3cc5c46b52f2
+Applied Forest Update 141: 3e7645f3-3ea5-4567-b35a-87630449c70c
+Applied Forest Update 142: e634067b-e2c4-4d79-b6e8-73c619324d5e
+Skip Domain Update 75: 5e1574f6-55df-493e-a671-aaeffca6a100
+Skip Domain Update 76: d262aae8-41f7-48ed-9f35-56bbb677573d
+Skip Domain Update 77: 82112ba0-7e4c-4a44-89d9-d46c9612bf91
+Applied Domain Update 78: c3c927a6-cc1d-47c0-966b-be8f9b63d991
+Applied Domain Update 79: 54afcfb9-637a-4251-9f47-4d50e7021211
+Applied Domain Update 80: f4728883-84dd-483c-9897-274f2ebcf11e
+Applied Domain Update 81: ff4f9d27-7157-4cb0-80a9-5d6f2b14c8ff
+Applied Domain Update 82: 83c53da7-427e-47a4-a07a-a324598b88f7
+Applied Domain Update 83: c81fc9cc-0130-4fd1-b272-634d74818133
+Applied Domain Update 84: e5f9e791-d96d-4fc9-93c9-d53e1dc439ba
+Applied Domain Update 85: e6d5fd00-385d-4e65-b02d-9da3493ed850
+Applied Domain Update 86: 3a6b3fbf-3168-4312-a10d-dd5b3393952d
+Applied Domain Update 87: 7f950403-0ab3-47f9-9730-5d7b0269f9bd
+Applied Domain Update 88: 434bb40d-dbc9-4fe7-81d4-d57229f7b080
+Applied Domain Update 89: a0c238ba-9e30-4ee6-80a6-43f731e9a5cd
+INFO 2024-10-01 16:31:47,363 pid:7584 /usr/lib/python3/dist-packages/samba/provision/__init__.py #2417: gkdi/gmsa root key added with guid 0d1a4eb9-c9e1-5b57-9e1b-c4f518cbe014
+INFO 2024-10-01 16:31:47,364 pid:7584 /usr/lib/python3/dist-packages/samba/provision/__init__.py #2428: A Kerberos configuration suitable for Samba AD has been generated at /var/lib/samba/private/krb5.conf
+INFO 2024-10-01 16:31:47,366 pid:7584 /usr/lib/python3/dist-packages/samba/provision/__init__.py #2430: Merge the contents of this file with your system krb5.conf or replace it with this one. Do not create a symlink!
+INFO 2024-10-01 16:31:50,299 pid:7584 /usr/lib/python3/dist-packages/samba/provision/__init__.py #492: Once the above files are installed, your Samba AD server will be ready to use
+INFO 2024-10-01 16:31:50,299 pid:7584 /usr/lib/python3/dist-packages/samba/provision/__init__.py #497: Server Role:           active directory domain controller
+INFO 2024-10-01 16:31:50,299 pid:7584 /usr/lib/python3/dist-packages/samba/provision/__init__.py #498: Hostname:              lm22dc
+INFO 2024-10-01 16:31:50,299 pid:7584 /usr/lib/python3/dist-packages/samba/provision/__init__.py #499: NetBIOS Domain:        AD
+INFO 2024-10-01 16:31:50,299 pid:7584 /usr/lib/python3/dist-packages/samba/provision/__init__.py #500: DNS Domain:            ad.home.arpa
+INFO 2024-10-01 16:31:50,301 pid:7584 /usr/lib/python3/dist-packages/samba/provision/__init__.py #501: DOMAIN SID:            S-1-5-21-3826856544-845890249-506939081
+adminuser@lm22dc:~$ 
+
+adminuser@lm22dc:~$ cat /etc/samba/smb.conf
+# Global parameters
+[global]
+	bind interfaces only = Yes
+	dns forwarder = 8.8.8.8
+	interfaces = lo enp0s3
+	netbios name = LM22DC
+	realm = AD.HOME.ARPA
+	server role = active directory domain controller
+	workgroup = AD
+
+[sysvol]
+	path = /var/lib/samba/sysvol
+	read only = No
+
+[netlogon]
+	path = /var/lib/samba/sysvol/ad.home.arpa/scripts
+	read only = No
+
+
+If you look closely, you will see that a krb5.conf has been created at /var/lib/samba/private/krb5.conf, copy this to /etc/krb5.conf
+
+sudo cp /var/lib/samba/private/krb5.conf /etc/krb5.conf
+
+if you now examine the file, you will something like this:
+
+adminuser@lm22dc:~$ cat /etc/krb5.conf
+[libdefaults]
+	default_realm = AD.HOME.ARPA
+	dns_lookup_realm = false
+	dns_lookup_kdc = true
+
+[realms]
+AD.HOME.ARPA = {
+	default_domain = ad.home.arpa
+}
+
+[domain_realm]
+	lm22dc = AD.HOME.ARPA
+
+
+Now we need to check and make sure that the DNS is working 
+
+You now need to make the DC network use itself as the nameserver, you also have to reset /etc/resolv.conf
+
+First use 'nmcli' to reset the network.
+
+adminuser@lm22dc:~$ sudo nmcli c modify 'Wired connection 1' +ipv4.dns 192.168.1.206
+adminuser@lm22dc:~$ sudo nmcli c modify 'Wired connection 1' -ipv4.dns 8.8.8.8
+adminuser@lm22dc:~$ sudo nmcli c modify 'Wired connection 1' -ipv4.dns 8.8.4.4
+adminuser@lm22dc:~$ sudo systemctl restart NetworkManager
+
+Then reset /etc/resolv.conf
+
+adminuser@lm22dc:~$ sudo nano /etc/resolv.conf
+
+Change it to look like this:
+
+nameserver 192.168.1.206 
+search ad.home.arpa
+
+Now start Samba:
+ 
+adminuser@lm22dc:~$ sudo systemctl enable samba-ad-dc
+Synchronizing state of samba-ad-dc.service with SysV service script with /lib/systemd/systemd-sysv-install.
+Executing: /lib/systemd/systemd-sysv-install enable samba-ad-dc
+
+adminuser@lm22dc:~$ sudo systemctl start samba-ad-dc
+
+adminuser@lm22dc:~$ sudo systemctl status samba-ad-dc
+● samba-ad-dc.service - Samba AD Daemon
+     Loaded: loaded (/usr/lib/systemd/system/samba-ad-dc.service; enabled; preset: enabled)
+     Active: active (running) since Tue 2024-10-01 16:38:34 BST; 9s ago
+       Docs: man:samba(8)
+             man:samba(7)
+             man:smb.conf(5)
+    Process: 8431 ExecCondition=/usr/share/samba/is-configured samba (code=exited, status=0/SUCCESS)
+   Main PID: 8434 (samba)
+     Status: "samba: ready to serve connections..."
+      Tasks: 59 (limit: 2269)
+     Memory: 184.9M (peak: 239.5M)
+        CPU: 2.864s
+     CGroup: /system.slice/samba-ad-dc.service
+             ├─8434 "samba: root process"
+             ├─8435 "samba: tfork waiter process(8436)"
+             ├─8436 "samba: task[s3fs] pre-fork master"
+             ├─8437 "samba: tfork waiter process(8439)"
+             ├─8438 "samba: tfork waiter process(8440)"
+             ├─8439 "samba: task[rpc] pre-fork master"
+             ├─8440 /usr/sbin/smbd -D "--option=server role check:inhibit=yes" --foreground
+             ├─8441 "samba: tfork waiter process(8442)"
+             ├─8442 "samba: task[nbt] pre-fork master"
+             ├─8443 "samba: tfork waiter process(8445)"
+             ├─8444 "samba: tfork waiter process(8446)"
+             ├─8445 "samba: task[wrepl] pre-fork master"
+             ├─8446 "samba: task[rpc] pre-forked worker(0)"
+             ├─8447 "samba: tfork waiter process(8449)"
+             ├─8448 "samba: tfork waiter process(8450)"
+             ├─8449 "samba: task[ldap] pre-fork master"
+             ├─8450 "samba: task[rpc] pre-forked worker(1)"
+             ├─8451 "samba: tfork waiter process(8453)"
+             ├─8452 "samba: tfork waiter process(8454)"
+             ├─8453 "samba: task[cldap] pre-fork master"
+             ├─8454 "samba: task[rpc] pre-forked worker(2)"
+             ├─8455 "samba: tfork waiter process(8457)"
+             ├─8456 "samba: tfork waiter process(8458)"
+             ├─8457 "samba: task[kdc] pre-fork master"
+             ├─8458 "samba: task[rpc] pre-forked worker(3)"
+             ├─8459 "samba: tfork waiter process(8462)"
+             ├─8461 "samba: tfork waiter process(8463)"
+             ├─8462 "samba: task[drepl] pre-fork master"
+             ├─8463 "samba: task[kdc] pre-forked worker(0)"
+             ├─8464 "samba: tfork waiter process(8466)"
+             ├─8465 "samba: tfork waiter process(8467)"
+             ├─8466 "samba: task[winbindd] pre-fork master"
+             ├─8467 "samba: task[kdc] pre-forked worker(1)"
+             ├─8468 "samba: tfork waiter process(8471)"
+             ├─8469 "samba: tfork waiter process(8472)"
+             ├─8470 "samba: tfork waiter process(8473)"
+             ├─8471 "samba: task[ntp_signd] pre-fork master"
+             ├─8472 /usr/sbin/winbindd -D "--option=server role check:inhibit=yes" --foreground
+             ├─8473 "samba: task[kdc] pre-forked worker(2)"
+             ├─8474 "samba: tfork waiter process(8477)"
+             ├─8475 "samba: tfork waiter process(8476)"
+             ├─8476 "samba: task[kcc] pre-fork master"
+             ├─8477 "samba: task[kdc] pre-forked worker(3)"
+             ├─8478 "samba: tfork waiter process(8479)"
+             ├─8479 "samba: task[dnsupdate] pre-fork master"
+             ├─8480 "samba: tfork waiter process(8483)"
+             ├─8483 "samba: task[dns] pre-fork master"
+             ├─8487 "smbd: notifyd" .
+             ├─8488 "smbd: cleanupd "
+             ├─8489 "winbindd: domain child [AD]"
+             ├─8490 "samba: tfork waiter process(8491)"
+             ├─8491 "samba: task[ldap] pre-forked worker(0)"
+             ├─8492 "samba: tfork waiter process(8493)"
+             ├─8493 "samba: task[ldap] pre-forked worker(1)"
+             ├─8494 "samba: tfork waiter process(8495)"
+             ├─8495 "samba: task[ldap] pre-forked worker(2)"
+             ├─8496 "samba: tfork waiter process(8497)"
+             ├─8497 "samba: task[ldap] pre-forked worker(3)"
+             └─8498 "winbindd: idmap child"
+
+Oct 01 16:38:33 lm22dc samba[8449]:   Attempting to autogenerate TLS self-signed keys for https for hostname 'LM22DC.ad.home.arpa'
+Oct 01 16:38:34 lm22dc smbd[8440]: [2024/10/01 16:38:34.005366,  0] source3/smbd/server.c:1965(main)
+Oct 01 16:38:34 lm22dc smbd[8440]:   smbd version 4.21.0-Ubuntu-4.21.0+dfsg-1~mjt+ubt24 started.
+Oct 01 16:38:34 lm22dc smbd[8440]:   Copyright Andrew Tridgell and the Samba Team 1992-2024
+Oct 01 16:38:34 lm22dc systemd[1]: Started samba-ad-dc.service - Samba AD Daemon.
+Oct 01 16:38:34 lm22dc winbindd[8472]: [2024/10/01 16:38:34.196355,  0] source3/winbindd/winbindd.c:1447(main)
+Oct 01 16:38:34 lm22dc winbindd[8472]:   winbindd version 4.21.0-Ubuntu-4.21.0+dfsg-1~mjt+ubt24 started.
+Oct 01 16:38:34 lm22dc winbindd[8472]:   Copyright Andrew Tridgell and the Samba Team 1992-2024
+Oct 01 16:38:36 lm22dc samba[8449]: [2024/10/01 16:38:36.014507,  0] source4/lib/tls/tlscert.c:155(tls_cert_generate)
+Oct 01 16:38:36 lm22dc samba[8449]:   TLS self-signed keys generated OK
+
+Now we just need to test everything is working. Enter the following command 
+
+adminuser@lm22dc:~$ sudo smbclient -NL localhost
+Anonymous login successful
+
+	Sharename       Type      Comment
+	---------       ----      -------
+tstream_smbXcli_np_destructor: cli_close failed on pipe srvsvc. Error was NT_STATUS_IO_TIMEOUT
+cli_rpc_pipe_open_noauth: rpc_pipe_bind for pipe srvsvc failed with error NT_STATUS_IO_TIMEOUT
+SMB1 disabled -- no workgroup available
+
+If you get the above, just run the command again:
+
+adminuser@lm22dc:~$ sudo smbclient -NL localhost
+Anonymous login successful
+
+	Sharename       Type      Comment
+	---------       ----      -------
+	sysvol          Disk      
+	netlogon        Disk      
+	IPC$            IPC       IPC Service (Samba 4.21.0-Ubuntu-4.21.0+dfsg-1~mjt+ubt24)
+SMB1 disabled -- no workgroup available
+
+To test the login is working run the following command 
+
+adminuser@lm22dc:~$ smbclient //localhost/netlogon -UAdministrator -c 'ls'
+
+You will be prompted for the Administrator password which you set when provisioning the domain 
+You should see something similar to the following: 
+
+Password for [AD\Administrator]:
+  .                                   D        0  Tue Oct  1 16:31:12 2024
+  ..                                  D        0  Tue Oct  1 16:31:12 2024
+
+		25106692 blocks of size 1024. 12893468 blocks available
+
+Now we need to check and make sure that the DNS is working 
+
+Use the following commands: 
+
+adminuser@lm22dc:~$ host -t SRV _ldap._tcp.ad.home.arpa.
+_ldap._tcp.ad.home.arpa has SRV record 0 100 389 lm22dc.ad.home.arpa.
+
+adminuser@lm22dc:~$ host -t SRV _kerberos._udp.ad.home.arpa.
+_kerberos._udp.ad.home.arpa has SRV record 0 100 88 lm22dc.ad.home.arpa.
+
+adminuser@lm22dc:~$ host -t A lm22dc.ad.home.arpa. 
+lm22dc.ad.home.arpa has address 192.168.1.206
+
+Kerberos
+
+adminuser@lm22dc:~$ sudo kinit Administrator
+Password for Administrator@ad.home.arpa: 
+Warning: Your password will expire in 41 days on Tue 12 Nov 2024 15:31:17 GMT
+
+adminuser@lm22dc:~$ sudo klist
+Ticket cache: FILE:/tmp/krb5cc_0
+Default principal: Administrator@AD.HOME.ARPA
+
+Valid starting     Expires            Service principal
+01/10/24 16:46:48  02/10/24 02:46:48  krbtgt/AD.HOME.ARPA@AD.HOME.ARPA
+	renew until 02/10/24 16:46:39
+
+adminuser@lm22dc:~$ wbinfo -u
+
+AD\administrator
+AD\guest
+AD\krbtgt
+
+adminuser@lm22dc:~$ wbinfo -g
+
+AD\cert publishers
+AD\ras and ias servers
+AD\allowed rodc password replication group
+AD\denied rodc password replication group
+AD\dnsadmins
+AD\enterprise read-only domain controllers
+AD\domain admins
+AD\domain users
+AD\domain guests
+AD\domain computers
+AD\domain controllers
+AD\schema admins
+AD\enterprise admins
+AD\group policy creator owners
+AD\read-only domain controllers
+AD\protected users
+AD\dnsupdateproxy
+
+adminuser@lm22dc:~$ wbinfo -i administrator
+AD\administrator:*:0:100::/home/AD/administrator:/bin/false
+
+adminuser@lm22dc:~$ wbinfo --group-info=Domain\ Users
+AD\domain users:x:100:
+
+adminuser@lm22dc:~$ sudo nano /etc/nsswitch.conf
+
+Change:
+
+hosts:          files mdns4_minimal [NOTFOUND=return] dns
+
+To:
+
+hosts:          files dns
+
+adminuser@lm22dc:~$ getent passwd administrator
+AD\administrator:*:0:100::/home/AD/administrator:/bin/false
+
+adminuser@lm22dc:~$ getent group Domain\ Users
+AD\domain users:x:100:
+
+Now create a user
+
+adminuser@lm22dc:~$ sudo samba-tool user add testuser P4SSw0rd* --surname=User --given-name=Test
+User 'testuser' added successfully
+
+adminuser@lm22dc:~$ wbinfo -u | grep 'testuser'
+AD\testuser
+
+adminuser@lm22dc:~$ getent passwd 'testuser'
+AD\testuser:*:3000017:100::/home/AD/testuser:/bin/false
+
+Create a reversezone:
+
+adminuser@lm22dc:~$ sudo samba-tool dns zonecreate lm22dc 1.168.192.in-addr.arpa -UAdministrator
+[sudo] password for adminuser: 
+Password for [AD\Administrator]:
+Zone 1.168.192.in-addr.arpa created successfully
+
+adminuser@lm22dc:~$ sudo samba-tool dns zonelist lm22dc
+  3 zone(s) found
+
+  pszZoneName                 : ad.home.arpa
+  Flags                       : DNS_RPC_ZONE_DSINTEGRATED DNS_RPC_ZONE_UPDATE_SECURE 
+  ZoneType                    : DNS_ZONE_TYPE_PRIMARY
+  Version                     : 50
+  dwDpFlags                   : DNS_DP_AUTOCREATED DNS_DP_DOMAIN_DEFAULT DNS_DP_ENLISTED 
+  pszDpFqdn                   : DomainDnsZones.ad.home.arpa
+
+  pszZoneName                 : 1.168.192.in-addr.arpa
+  Flags                       : DNS_RPC_ZONE_DSINTEGRATED DNS_RPC_ZONE_UPDATE_SECURE 
+  ZoneType                    : DNS_ZONE_TYPE_PRIMARY
+  Version                     : 50
+  dwDpFlags                   : DNS_DP_AUTOCREATED DNS_DP_DOMAIN_DEFAULT DNS_DP_ENLISTED 
+  pszDpFqdn                   : DomainDnsZones.ad.home.arpa
+
+  pszZoneName                 : _msdcs.ad.home.arpa
+  Flags                       : DNS_RPC_ZONE_DSINTEGRATED DNS_RPC_ZONE_UPDATE_SECURE 
+  ZoneType                    : DNS_ZONE_TYPE_PRIMARY
+  Version                     : 50
+  dwDpFlags                   : DNS_DP_AUTOCREATED DNS_DP_FOREST_DEFAULT DNS_DP_ENLISTED 
+  pszDpFqdn                   : ForestDnsZones.ad.home.arpa
+
+At this point, you should have a Samba AD DC.
+
+
