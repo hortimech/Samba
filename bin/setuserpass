@@ -1,0 +1,82 @@
+#!/bin/bash
+
+#  setuserpass : Set an AD users password
+
+#  This program is free software; you can redistribute it and/or
+#  modify it under the terms of the GNU General Public License
+#  as published by the Free Software Foundation; either version 2
+#  of the License, or (at your option) any later version.
+#
+#  This program is distributed in the hope that it will be useful,
+#  but WITHOUT ANY WARRANTY; without even the implied warranty of
+#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#  GNU General Public License for more details.
+#
+#  You should have received a copy of the GNU General Public License
+#  along with this program; if not, write to the Free Software
+#  Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307,
+#  USA.
+
+usage() {
+	cat <<-EOF
+	
+	Usage : $0 <username> <password>
+	
+	This script will change a users unicode password.
+	 
+	The Password must contain characters from three of these categories:
+	
+	    Uppercase characters (A through Z)
+	
+	    Lowercase characters (a through z)
+	
+	    Base 10 digits (0 through 9)
+	
+	    Nonalphanumeric characters: ~!@#$%^&*_-+=|\(){}[]:;"'<>,.?/
+	
+	EOF
+}
+
+if [ -z "$1" ] || [-z "$2" ] || [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
+	usage
+	exit 1
+fi
+
+_USER="$1"
+_USER_PW="$2"
+
+# Check for valid kerberos ticket
+KUSER="$(whoami)"
+USERID="$(getent passwd "$KUSER" | awk -F ':' '{print $3}')"
+TICKET=$(find /tmp -iname "*krb5cc_$USERID*" 2> /dev/null)
+klist -s "$TICKET" || { echo "No, or invalid kerberos ticket."; exit 1; }
+
+# get base DN
+SUFFIX=$(echo "dc=$(hostname -d)" | sed 's/\./,dc=/g')
+
+# Find DC with PDC_Emulator FSMO role
+PDC_E=$(host -t SRV _ldap._tcp.pdc._msdcs."$(hostname -d)" | awk '{print $NF}' | sed 's/\.$//')
+# Set as DC to make changes on
+ldbdb="ldap://$PDC_E"
+
+# Find supplied username : $_USER must exist in AD !
+_ENTRY=$(ldbsearch --url="$ldbdb" --use-krb5-ccache="$TICKET" -b "$SUFFIX" -s sub "(&(objectClass=user)(sAMAccountName=$_USER))" dn | grep "dn: ")
+if [ -z "$_ENTRY" ]; then
+	echo "User $_USER does not exist in AD"
+	exit 1
+fi
+
+# Create unicode password
+_UNICODEPW=$(echo -n "\"$_USER_PW\"" | iconv -f UTF-8 -t UTF-16LE | base64 -w 0)
+
+# Change users password in AD
+echo "$_ENTRY
+changetype: modify
+replace: unicodePwd
+unicodePwd::$_UNICODEPW
+-" | ldbmodify --url="$ldbdb" --use-krb5-ccache="$TICKET" || { echo "Error changing user $_USER's Password in AD" ; exit 1; }
+
+echo "Successfully changed Password for $_USER in AD"
+
+exit 0
+
