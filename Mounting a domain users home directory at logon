@@ -1,0 +1,215 @@
+
+Mounting a domain users home directory at logon
+
+This has been tested on the following clients:
+	LMDE6 (with the Cinnamon desktop).
+	Debian 12 with the Gnome, MATE and XFCE desktops.
+	Rocky Linux 9 with the Gnome desktop.
+
+The only failure was the MATE desktop, which, while it mounted the users desktop, was unusable due to crashing mate-panels.
+
+Data used in this tutorial:
+DNS domain:		samdom.example.com
+Workgroup:		SAMDOM
+Fileservers FQDN:	nas.samdom.example.com
+
+Wherever you see the above in this document, replace it with your data.
+
+To mount a domain users home directory at logon, you require:
+
+1) At least one Samba AD DC to authenticate the user.
+
+2) A Samba Unix domain member acting as a fileserver to store the user home directories.
+	Carry out the following on the Samba fileserver:
+
+	Do not set the 'template homedir' parameter in the fileservers smb.conf file, this will result in the default '/home/%D/%U' being used for the users home directory path.
+	Set up the 'homes' share:
+	
+	[homes]
+	   comment = Home Directories
+	   browseable = no
+	   read only = no
+	   create mask = 0700
+	   directory mask = 0700
+	   valid users = %S
+	   root preexec = /usr/local/sbin/mkhomedir.sh %U %H
+
+	To save having to manually create each users 'home' directory on the fileserver, you can get Samba to create them on the 'fly' using a 'root preexec' script.
+
+	Create /usr/local/sbin/mkhomedir.sh with this content:
+
+~~~~~~~~ START ~~~~~~~~
+#!/bin/bash
+
+# /usr/local/sbin/mkhomedir.sh
+
+# Version 0.5.0
+# Copyright (C) Rowland Penny <rpenny@samba.org>
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#
+
+###############################################################################
+#                  DO NOT CHANGE ANYTHING BELOW THIS LINE                     #
+###############################################################################
+
+if [ "$#" -ne 2 ]; then
+        logger "$0: Incorrect number of parameters supplied"
+        logger "$0: Expected '2', Received '$#'"
+        exit
+fi
+
+# Check if required programs are installed.
+notinstalled=' '
+programs="wbinfo grep getent"
+for program in $programs ; do
+        command -v "$program" > /dev/null 2>&1
+        retval="$?"
+        if [ "$retval" -ne 0 ]; then
+                notinstalled="$notinstalled $program"
+        fi
+done
+
+if [ "$notinstalled" != ' ' ]; then
+        clear
+        logger "$0: Could not find these programs:"
+        logger "$0: $notinstalled"
+        logger "Cannot continue...Exiting."
+        exit 1
+fi
+
+WBINFO=$(command -v wbinfo)
+GREP=$(command -v grep)
+GETENT=$(command -v getent)
+
+# # the user 'root' doesn't need a homedirectory.
+[ "${1}" = 'root' ] && exit 0
+
+# exit if not an AD user.
+[ -z "$($WBINFO -u | $GREP "${1}")" ] && exit 1
+
+# exit if user is unknown to Unix.
+[ -z "$($GETENT passwd "${1}")" ] && exit 1
+
+SambaUser="${1}"
+HOMEDIR="${2}"
+
+# Extract users base homedir.
+BASEDIR="$(dirname "${HOMEDIR}")"
+# /home should already exist with correct permissions, we are in deep do-doo if it doesn't ;-)
+# Test if the base folder exists. e.g. /home/SAMDOM
+if [ ! -d "${BASEDIR}" ]; then
+	# If it doesn't, create ${BASEDIR}
+	#### Requires 755 7 for user, 5 for group and 5 to allow everone to enter the folder.
+	install -d "$BASEDIR" -o "root" -g "root" "${BASEDIR}" -m 0755
+else
+	# "${BASEDIR}" exists
+	# Test for the required permissions.
+	BASE_OWNER=$(stat -c "%U" "${BASEDIR}")
+	BASE_GROUP=$(stat -c "%G" "${BASEDIR}")
+	if [ "$BASE_OWNER" != 'root' ] || [ "$BASE_GROUP" != 'root' ]; then
+		chown root:root "${BASEDIR}"
+		chmod 0755 "${BASEDIR}"
+	fi
+fi
+
+if [ ! -e "${HOMEDIR}" ]; then
+	# Setup user folder.
+	install -d "${HOMEDIR}" -o "${SambaUser}" -g "${DOMUSERS}" -m 700 "${HOMEDIR}"
+	logger "$0: Created Home Directory '${HOMEDIR}' for '${SambaUser}'"
+fi
+
+exit 0
+~~~~~~~~ END ~~~~~~~~
+
+3) A client, running Samba as a Unix domain member.
+	Carry out the following on each client:
+
+	The Samba AD domain client must be set up correctly and joined to the domain.
+
+	NOTES:	you must not use PAM 'mkhomedir' on the client.
+		Do not set 'template homedir' in the clients smb.conf file.
+
+	Mounting the users home directories from an external fileserver;
+
+	Install the required software on the client:
+
+	sudo apt install libpam-mount cifs-utils hxtools
+
+	Make a backup of the existing pam_mount.conf.xml file:
+
+	sudo cp /etc/security/pam_mount.conf.xml /etc/security/pam_mount.conf.xml.orig
+
+	Modify /etc/security/pam_mount.conf.xml to match this (changing the data to match yours):
+
+	sudo nano /etc/security/pam_mount.conf.xml
+
+~~~~~~~~ START ~~~~~~~~
+<?xml version="1.0" encoding="utf-8" ?>
+<!DOCTYPE pam_mount SYSTEM "pam_mount.conf.xml.dtd">
+<!--
+	See pam_mount.conf(5) for a description.
+-->
+
+<pam_mount>
+
+		<!-- debug should come before everything else,
+		since this file is still processed in a single pass
+		from top-to-bottom -->
+
+<debug enable="0" />
+
+		<!-- Volume definitions -->
+<volume fstype="cifs"
+	server="nas.samdom.example.com"
+	path="%(USER)"
+	mountpoint="/home/SAMDOM/%(USER)"
+	options="user=%(USER),cruid=%(USER),uid=%(USER),gid=%(USER),sec=krb5,mfsymlinks,nobrl"
+/>
+		<!-- pam_mount parameters: General tunables -->
+
+<!--
+<luserconf name=".pam_mount.conf.xml" />
+-->
+
+<!-- Note that commenting out mntoptions will give you the defaults.
+     You will need to explicitly initialize it with the empty string
+     to reset the defaults to nothing. -->
+<mntoptions allow="nosuid,nodev,loop,encryption,fsck,nonempty,allow_root,allow_other" />
+<!--
+<mntoptions deny="suid,dev" />
+<mntoptions allow="*" />
+<mntoptions deny="*" />
+-->
+<mntoptions require="nosuid,nodev" />
+
+<!-- requires ofl from hxtools to be present -->
+<logout wait="2000000" hup="0" term="1" kill="1" />
+
+		<!-- pam_mount parameters: Volume-related -->
+<mkmountpoint enable="1" remove="1" />
+
+</pam_mount>
+~~~~~~~~ END ~~~~~~~~
+
+	NOTE:
+	If you are using the GDM3 desktop manager, you might want to edit '/etc/gdm3/greeter.dconf-defaults' and uncomment the line:
+	disable-user-list=true
+
+	If you don't, GDM3 will list ALL your domain users on the logon screen.
+`
+	now reboot your client and attempt to login as a domain user.
+	You should be logged in with a working desktop mounted from the fileserver.
+
+
