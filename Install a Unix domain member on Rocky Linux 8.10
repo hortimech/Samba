@@ -1,0 +1,297 @@
+
+Installing and configuring Samba as a Unix domain member on Rocky Linux 8.10
+
+ I installed Rocky Linux 8.10 using the minimal install iso, I mostly just used the defaults.
+ 
+Once the install has completed and the computer has rebooted, login and run a few commands to test your hostname etc. Do not continue unless you get the answers you expect:
+
+Here, my hostname is rocky810, the dns domain is samdom.example.com, the IP is set by dhcp.
+
+[adminuser@rocky810 ~]$ hostname -s
+rocky810
+
+[adminuser@rocky810 ~]$ hostname -d
+samdom.example.com
+
+[adminuser@rocky810 ~]$ hostname -f
+rocky810.samdom.example.com
+
+[adminuser@rocky810 ~]$ hostname -i
+fe80::a00:27ff:fe82:7d04%enp0s3 192.168.1.121
+
+[adminuser@rocky810 ~]$ hostname -I
+192.168.1.121 
+
+Check /etc/hosts
+
+It should contain a line like this:
+
+127.0.1.1 rocky810.samdom.example.com rocky810
+
+NOTE: If using a fixed IP, replace '127.0.1.1' with the IP you gave to the computer.
+
+Update the computer:
+
+[adminuser@rocky810 ~]$ sudo dnf update
+
+Install the required packages:
+
+[adminuser@rocky810 ~]$ sudo dnf install samba samba-winbind samba-winbind-clients krb5-workstation ldb-tools samba-winbind-krb5-locator oddjob
+
+Configuring Kerberos
+
+modify the file /etc/krb5.conf and replace all its contents by the following lines by specifying the Active Directory domain of your organization (here SAMDOM.EXAMPLE.COM) :
+
+Attention: The default_realm must be written in UPPERCASE LETTERS !
+
+[adminuser@rocky810 ~]$ sudo cp /etc/krb5.conf /etc/krb5.conf.orig
+
+[adminuser@rocky810 ~]$ sudo nano /etc/krb5.conf
+
+    [libdefaults]
+      default_realm = SAMDOM.EXAMPLE.COM
+      dns_lookup_kdc = false
+      dns_lookup_realm = true
+    
+    [realms]
+        SAMDOM.EXAMPLE.COM = {
+            default_domain = samdom.example.com
+            # NOTE: the following KDC must be one of your DCs
+            # and isn't required on Debian.
+            kdc = dc1.samdom.example.com
+        }
+    
+    [domain_realm]
+        ROCKY810 = SAMDOM.EXAMPLE.COM
+    
+[adminuser@rocky810 ~]$ sudo rm /etc/krb5.conf.d/crypto-policies
+
+NOTE: it tells you to do the above in the default /etc/krb5.conf installed by the packages install. 
+
+# To opt out of the system crypto-policies configuration of krb5, remove the
+# symlink at /etc/krb5.conf.d/crypto-policies which will not be recreated.
+
+Configure the smb.conf file:
+
+NOTE: the workgroup and REALM used are 'SAMDOM' and 'SAMDOM.EXAMPLE.COM', replace them with yours.
+
+[adminuser@rocky810 ~]$ sudo cp /etc/samba/smb.conf /etc/samba/smb.conf.orig
+
+[adminuser@rocky810 ~]$ sudo nano /etc/samba/smb.conf
+
+[global]
+  workgroup = SAMDOM
+  security = ADS
+  realm = SAMDOM.EXAMPLE.COM
+
+  dedicated keytab file = /etc/krb5.keytab
+  kerberos method = secrets and keytab
+  server string = Samba Client %h
+
+  winbind use default domain = yes
+  winbind expand groups = 2
+  winbind refresh tickets = Yes
+  disable netbios = yes
+
+  idmap config * : backend = tdb
+  idmap config * : range = 3000-7999
+  idmap config SAMDOM : backend  = rid
+  idmap config SAMDOM : range = 10000-999999
+  template shell = /bin/bash
+  template homedir = /home/%U
+
+  vfs objects = acl_xattr
+  map acl inherit = Yes
+
+  # Uncomment the following line for freeradius
+  #ntlm auth = mschapv2-and-ntlmv2-only
+  # NOTE; If used, you must also add the same line
+  # to every Samba AD DCs smb.conf.
+
+  # Comment the following 4 lines to act as a print server
+  printcap name = /dev/null
+  load printers = no
+  disable spoolss = yes
+  printing = bsd
+
+  # logging
+  log level = 1
+  log file = /var/log/samba/%m.log
+  logging = file
+
+[homes]
+  comment = Home Directories
+  browseable = no
+  read only = no
+  create mask = 0700
+  directory mask = 0700
+  valid users = %S
+
+Stop the Samba nmbd deamon from starting:
+
+[adminuser@rocky810 ~]$ sudo systemctl mask nmb
+
+Stop sssd and then stop it from starting:
+
+[adminuser@rocky810 ~]$ sudo systemctl stop sssd
+[adminuser@rocky810 ~]$ sudo systemctl mask sssd
+
+Now Join domain:
+
+First run kinit as root with a user that is a member of the Domain Admins group:
+
+[adminuser@rocky810 ~]$ sudo kinit aduser
+
+When prompted, enter the users AD password, this should result in a kerberos ticket in /tmp/krb5cc_0
+
+You cn read the ticket with 'klist':
+
+sudo klist -c /tmp/krb5cc_0 
+Ticket cache: FILE:/tmp/krb5cc_0
+Default principal: aduser@SAMDOM.EXAMPLE.COM
+
+Valid starting     Expires            Service principal
+12/02/25 12:08:08  12/02/25 22:08:08  krbtgt/SAMDOM.EXAMPLE.COM@SAMDOM.EXAMPLE.COM
+	renew until 13/02/25 12:07:59
+
+Now join the domain:
+
+[adminuser@rocky810 ~]$ sudo net ads join --use-krb5-ccache=/tmp/krb5cc_0
+Using short domain name -- SAMDOM
+Joined 'ROCKY810' to dns domain 'samdom.example.com'
+
+Now enable Samba so that it starts automatically at the next reboot:
+
+[adminuser@rocky810 ~]$ sudo systemctl enable winbind smb
+
+Then start the required Samba services:
+
+[adminuser@rocky810 ~]$ sudo systemctl start winbind smb
+
+Now check domain connection:
+
+The next commands should return all AD users and groups:
+
+[adminuser@rocky810 ~]$ wbinfo -u
+
+[adminuser@rocky810 ~]$ wbinfo -g
+
+NOTE: Just because your users & groups are shown by 'wbinfo' does not mean they are known to Unix!
+ 
+Check for AD account info:
+
+[adminuser@rocky810 ~]$ wbinfo -i administrator
+
+administrator:*:10500:10513::/home/administrator:/bin/bash
+
+Now modify /etc/nsswitch.conf to use winbind:
+
+[adminuser@rocky810 ~]$ sudo authselect select winbind with-mkhomedir --force
+
+[adminuser@rocky810 ~]$ sudo systemctl enable oddjobd.service
+
+[adminuser@rocky810 ~]$ sudo systemctl start oddjobd.service
+
+The next commands should return users and groups with their Unix ID:
+
+getent passwd administrator
+
+administrator:*:10500:10513::/home/administrator:/bin/bash
+
+NOTE: even though 'getent' allows you to see 'Administrator' on a Unix machine using the 'rid' backend, never logon as, or use, Administrator directly. Only use 'Administrator' on Windows.
+
+Try the same command with a normal AD user (replace 'aduser' with a known AD user):
+
+getent passwd aduser
+aduser:*:11107:10513::/home/aduser:/bin/bash
+
+Now a group:
+getent group "domain admins"
+domain admins:x:10512:administrator,...................
+
+getent group "domain users"
+domain users:x:10513:aduser,..................
+
+Unfotunately, you will still have lines in /etc/nsswitch.conf that contain 'sss', to fix this:
+
+sudo cp /etc/authselect/user-nsswitch.conf /etc/authselect/user-nsswitch.conf.orig
+
+Modify /etc/authselect/user-nsswitch.conf to match this:
+
+#
+# /etc/nsswitch.conf
+#
+# Name Service Switch config file. This file should be
+# sorted with the most-used services at the beginning.
+#
+# Valid databases are: aliases, ethers, group, gshadow, hosts,
+# initgroups, netgroup, networks, passwd, protocols, publickey,
+# rpc, services, and shadow.
+#
+# Valid service provider entries include (in alphabetical order):
+#
+#       compat                  Use /etc files plus *_compat pseudo-db
+#       db                      Use the pre-processed /var/db files
+#       dns                     Use DNS (Domain Name Service)
+#       files                   Use the local files in /etc
+#       hesiod                  Use Hesiod (DNS) for user lookups
+#
+# See `info libc 'NSS Basics'` for more information.
+#
+# Commonly used alternative service providers (may need installation):
+#
+#       ldap                    Use LDAP directory server
+#       myhostname              Use systemd host names
+#       mymachines              Use systemd machine names
+#       mdns*, mdns*_minimal    Use Avahi mDNS/DNS-SD
+#       resolve                 Use systemd resolved resolver
+#       sss                     Use System Security Services Daemon (sssd)
+#       systemd                 Use systemd for dynamic user option
+#       winbind                 Use Samba winbind support
+#       wins                    Use Samba wins support
+#       wrapper                 Use wrapper module for testing
+#
+# Notes:
+#
+# 'sssd' performs its own 'files'-based caching, so it should generally
+# come before 'files'.
+#
+# WARNING: Running nscd with a secondary caching service like sssd may
+#          lead to unexpected behaviour, especially with how long
+#          entries are cached.
+#
+# Installation instructions:
+#
+# To use 'db', install the appropriate package(s) (provide 'makedb' and
+# libnss_db.so.*), and place the 'db' in front of 'files' for entries
+# you want to be looked up first in the databases, like this:
+#
+# passwd:    db files
+# shadow:    db files
+# group:     db files
+
+# In order of likelihood of use to accelerate lookup.
+passwd:     files winbind systemd
+shadow:     files
+group:      files winbind systemd
+hosts:      files dns myhostname
+services:   files
+netgroup:   nis
+automount:  files winbind
+
+aliases:    files
+ethers:     files
+gshadow:    files
+# Allow initgroups to default to the setting for group.
+# initgroups: files
+networks:   files dns
+protocols:  files
+publickey:  files
+rpc:        files
+
+Now apply the changes:
+
+sudo authselect apply-changes
+
+If you now check /etc/nsswitch.conf, it should no longer contain 'sss' on any of the uncommented lines.
+
