@@ -50,15 +50,12 @@ Attention: The default_realm must be written in UPPERCASE LETTERS !
 
     [libdefaults]
       default_realm = SAMDOM.EXAMPLE.COM
-      dns_lookup_kdc = false
-      dns_lookup_realm = true
+      dns_lookup_kdc = true
+      dns_lookup_realm = false
     
     [realms]
         SAMDOM.EXAMPLE.COM = {
             default_domain = samdom.example.com
-            # NOTE: the following KDC must be one of your DCs
-            # and isn't required on Debian.
-            kdc = dc1.samdom.example.com
         }
     
     [domain_realm]
