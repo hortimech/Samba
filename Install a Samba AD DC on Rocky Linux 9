@@ -333,6 +333,20 @@ SAMBA\read-only domain controllers
 SAMBA\protected users
 SAMBA\dnsupdateproxy
 
+Finally configure the firewall rules to open the ports necessary for Samba-AD to work:
+
+sudo firewall-cmd --zone=public --add-port=53/tcp --add-port=53/udp --permanent
+sudo firewall-cmd --zone=public --add-port=88/tcp --add-port=88/udp --permanent
+sudo firewall-cmd --zone=public --add-port=389/tcp --add-port=389/udp --permanent
+sudo firewall-cmd --zone=public --add-port=464/tcp --add-port=464/udp --permanent
+sudo firewall-cmd --zone=public --add-port=445/tcp --permanent
+sudo firewall-cmd --zone=public --add-port=135/tcp --permanent
+sudo firewall-cmd --zone=public --add-port=636/tcp --permanent
+sudo firewall-cmd --zone=public --add-port=3268/tcp --permanent
+sudo firewall-cmd --zone=public --add-port=3269/tcp --permanent
+sudo firewall-cmd --zone=public --add-port=49152-65535/tcp --permanent
+sudo systemctl restart firewalld
+
 Great, if you have made it this far, then everything is going well and you have a new Samba Active Directory domain up and running.
 
 
