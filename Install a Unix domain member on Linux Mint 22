@@ -1,0 +1,331 @@
+
+Install a Unix domain member on Linux Mint 22.3
+
+This document will use the following settings, you should change them to your settings.
+
+Hostname :				lm223
+DNS Domain:				samdom.example.com
+FQDN :					lm223.samdom.example.com
+REALM:					SAMDOM.EXAMPLE.COM (Always the DNS Domain in UPPERCASE)
+IP address:				192.168.1.137 (Set by DHCP)
+Username created during install:	adminuser
+
+Linux Mint 22 was installed with the Cinnamon desktop, it was fully updated after install.
+
+My dhcp server supplies all the relevant information, ipaddress, DNS domain, nameservers etc
+
+I carried out the install by connecting via SSH to the Linux Mint client, but, apart from that, the install should be the same as if carried out directly on the computer.
+
+NOTE: This document uses the 'rid' idmap config backend, which means that you do not need to add anything to AD for it to work and if you use the same smb.conf on all Samba domain members, you will always get the same Unix ID for users & groups.
+
+
+Logon as the user created during the install.
+
+OPTIONAL:
+Install the SSH server
+
+Open a terminal and type:
+
+sudo apt install openssh-server
+
+press 'enter'
+
+Press the 'y' key, followed by the 'enter' key
+
+The SSH server will now be installed.
+
+Once installed, you need to find the ipaddress set by DHCP.
+
+in the terminal type:
+
+ip --brief addr | grep 'UP' | awk '{print $3}'
+
+press 'enter'
+
+It should display something like this:
+
+192.168.1.137/24
+
+The first part before the '/' is the IP address and the part after the '/' is the CIDR
+
+Go to another Linux computer, open a terminal and type:
+
+ssh adminuser@192.168.1.137
+
+Press enter
+
+You should get something like this:
+ 
+The authenticity of host '192.168.1.137 (192.168.1.137)' can't be established.
+ED25519 key fingerprint is SHA256:QKI4z3Y/4MpYcvCi95hHFOJrmwhNS1AVn99LDMGi4MI.
+This key is not known by any other names.
+Are you sure you want to continue connecting (yes/no/[fingerprint])? yes
+
+Enter 'yes' as shown and press 'enter
+
+It should reply like this and prompt for the users password:
+
+Warning: Permanently added '192.168.1.137' (ED25519) to the list of known hosts.
+adminuser@192.168.1.137's password: 
+
+Enter the users password and press 'enter', you should get logged into the remote machine:
+
+adminuser@lm223:~$ 
+
+###### END OPTIONAL ########
+
+Once logged in, you need to check a few things in a terminal:
+
+cat /etc/resolv.conf
+
+nameserver 127.0.0.53
+options edns0 trust-ad
+search samdom.example.com
+
+Does search show your dns domain ?
+
+cat /etc/hosts
+
+It will probably look like this:
+
+127.0.0.1	localhost
+127.0.1.1	lm223
+
+# The following lines are desirable for IPv6 capable hosts
+::1     ip6-localhost ip6-loopback
+fe00::0 ip6-localnet
+ff00::0 ip6-mcastprefix
+ff02::1 ip6-allnodes
+ff02::2 ip6-allrouters
+
+If it does, open /etc/hosts in your favourite editor and make it look like this, by adding the DNS domain to the '127.0.1.1' line:
+
+127.0.0.1	localhost
+127.0.1.1	lm223.samdom.example.com lm223
+
+# The following lines are desirable for IPv6 capable hosts
+::1     ip6-localhost ip6-loopback
+fe00::0 ip6-localnet
+ff00::0 ip6-mcastprefix
+ff02::1 ip6-allnodes
+ff02::2 ip6-allrouters
+
+Run the following commands, they should display output similar to what is shown, but using your data:
+
+hostname -s
+lm223
+
+hostname -d
+samdom.example.com
+
+hostname -f
+lm223.samdom.example.com
+
+hostname -i
+127.0.1.1
+
+hostname -I
+192.168.1.137
+
+Now install Samba:
+
+sudo apt install samba winbind libnss-winbind libpam-winbind ldb-tools krb5-user -y
+
+Check your installed version of Samba:
+
+smbd -V
+Version 4.19.5-Ubuntu
+
+NOTE: the latest version of Samba is 4.24.1 , but 4.19.5 is the version that comes with Linux Mint 22.
+
+Back up the existing kbr5.conf:
+
+sudo cp /etc/krb5.conf /etc/krb5.conf.original
+
+Modify /etc/krb5.conf to look like this:
+
+sudo nano /etc/krb5.conf
+
+[libdefaults]
+	default_realm = SAMDOM.EXAMPLE.COM
+	dns_lookup_realm = false
+	dns_lookup_kdc = true
+
+[realms]
+SAMDOM.EXAMPLE.COM = {
+	default_domain = samdom.example.com
+}
+
+[domain_realm]
+	lm223 = SAMDOM.EXAMPLE.COM
+
+Backup the existing /etc/samba/smb.conf file and then modify it to look like this:
+
+sudo cp /etc/samba/smb.conf /etc/samba/smb.conf.original
+
+sudo nano /etc/samba/smb.conf
+
+[global]
+    workgroup = SAMDOM
+    security = ADS
+    realm = SAMDOM.EXAMPLE.COM
+
+    dedicated keytab file = /etc/krb5.keytab
+    kerberos method = secrets and keytab
+    server string = Samba Client %h
+
+    winbind use default domain = yes
+    winbind expand groups = 2
+    winbind refresh tickets = Yes
+    disable netbios = yes
+    smb ports = 445
+    dns proxy = no
+
+    ## map ids outside of domain to a tdb file.
+    idmap config *:backend = tdb
+    idmap config *:range = 3000-7999
+    ## map ids from the domain. The ranges must not overlap !
+    idmap config SAMDOM : backend = rid
+    idmap config SAMDOM : range = 10000-999999
+    template shell = /bin/bash
+    template homedir = /home/%U
+
+    # For ACL support on domain member
+    vfs objects = acl_xattr
+    map acl inherit = Yes
+
+    # disable printing completely
+    load printers = no
+    printing = bsd
+    printcap name = /dev/null
+    disable spoolss = yes
+
+    # logging
+    log level = 1
+    log file = /var/log/samba/%m.log
+    logging = file
+
+[homes]
+    comment = Home Directories
+    browseable = no
+    read only = no
+    create mask = 0700
+    directory mask = 0700
+    valid users = %S
+
+Run 'testparm -s', it will show if you have any typos
+ 
+Stop the running Samba services, then mask nmbd
+
+sudo systemctl stop nmbd smbd winbind
+sudo systemctl mask nmbd
+
+You should be able to ping a DC by its short hostname, if not, find out why.
+
+adminuser@lm223:~$ ping -c1 dc01
+PING dc01.samdom.example.com (192.168.1.2) 56(84) bytes of data.
+64 bytes from dc01.samdom.example.com (192.168.1.2): icmp_seq=1 ttl=64 time=2.05 ms
+
+--- dc01.samdom.example.com ping statistics ---
+1 packets transmitted, 1 received, 0% packet loss, time 0ms
+rtt min/avg/max/mdev = 2.046/2.046/2.046/0.000 ms
+
+The final thing to do before joining the domain is to ensure that time is in sync with the AD domain.
+
+Kerberos only works if the date and time of the computer joining AD are the same as the AD.
+
+Edit /etc/systemd/timesyncd.conf so that the [Time] section looks like this:
+
+[Time]
+NTP=dc01.samdom.example.com
+FallbackNTP=0.debian.pool.ntp.org 1.debian.pool.ntp.org 2.debian.pool.ntp.org 3.debian.pool.ntp.org
+
+NOTE: Replace 'dc01.samdom.example.com' with the FQDN of one of your AD DC's
+
+To sync the time on the localhost, run:
+
+sudo timedatectl set-ntp true
+sudo systemctl restart systemd-timesyncd.service
+sudo timedatectl --adjust-system-clock
+               Local time: Thu 2026-04-23 12:45:42 BST
+           Universal time: Thu 2026-04-23 11:45:42 UTC
+                 RTC time: Thu 2026-04-23 11:45:42
+                Time zone: Europe/London (BST, +0100)
+System clock synchronized: yes
+              NTP service: active
+          RTC in local TZ: no
+
+Now join the domain
+
+sudo net ads join -Uadministrator
+Password for [SAMDOM\administrator]:
+Using short domain name -- SAMDOM
+Joined 'LM223' to dns domain 'samdom.example.com'
+
+Modify nsswitch
+
+sudo nano /etc/nsswitch.conf
+
+Change:
+
+hosts:          files mdns4_minimal [NOTFOUND=return] dns myhostname
+
+To:
+
+hosts:          files dns myhostname
+
+sudo systemctl start winbind smbd
+sudo systemctl enable winbind smbd
+Synchronizing state of winbind.service with SysV service script with /lib/systemd/systemd-sysv-install.
+Executing: /lib/systemd/systemd-sysv-install enable winbind
+Synchronizing state of smbd.service with SysV service script with /lib/systemd/systemd-sysv-install.
+Executing: /lib/systemd/systemd-sysv-install enable smbd
+
+A few checks:
+
+wbinfo -u 
+Should shown all your AD users
+
+wbinfo -g
+Should show all your AD groups
+
+getent passwd <USERNAME>
+Should show a users information
+
+NOTE: Running 'getent passwd' without a username should only display local users from /etc/passwd, this is by design. The same goes for 'getent group' without a group name.
+
+e.g.
+getent passwd hortimech
+hortimech:*:11104:10513::/home/hortimech:/bin/bash
+
+getent group <GROUPNAME>
+should show a groups information
+e.g.
+getent group Domain\ Users
+domain users:x:10513:krbtgt,............
+
+Note the escaping of the space in Domain Users with a '\'
+
+If you now go to another Linux machine and run this command in a terminal (requires smbclient to be installed):
+
+adminuser@dc03:~ $ smbclient -NL lm223
+
+You should get this returned
+
+Anonymous login successful
+
+	Sharename       Type      Comment
+	---------       ----      -------
+	IPC$            IPC       IPC Service (Samba Client lm223)
+	nobody          Disk      Home Directories
+SMB1 disabled -- no workgroup available
+
+If you get lines like these:
+
+tstream_smbXcli_np_destructor: cli_close failed on pipe srvsvc. Error was NT_STATUS_IO_TIMEOUT
+cli_rpc_pipe_open_noauth: rpc_pipe_bind for pipe srvsvc failed with error NT_STATUS_IO_TIMEOUT
+
+Just rerun the command again.
+
+If you have got this far, congratulations, you have a working Unix domain member.
+
