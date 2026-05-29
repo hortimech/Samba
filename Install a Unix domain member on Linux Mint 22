@@ -12,7 +12,7 @@ Username created during install:	adminuser
 
 Linux Mint 22 was installed with the Cinnamon desktop, it was fully updated after install.
 
-My dhcp server supplies all the relevant information, ipaddress, DNS domain, nameservers etc
+My dhcp server, as well as assigning the computers IP address, also supplies the following DNS information, the DNS domain, the DNS 'search' domain, nameservers (which are all AD DCs) and gateway.
 
 I carried out the install by connecting via SSH to the Linux Mint client, but, apart from that, the install should be the same as if carried out directly on the computer.
 
@@ -38,15 +38,13 @@ Once installed, you need to find the ipaddress set by DHCP.
 
 in the terminal type:
 
-ip --brief addr | grep 'UP' | awk '{print $3}'
+hostname -I
 
 press 'enter'
 
-It should display something like this:
+It should return the computers IP address as set by DHCP
 
-192.168.1.137/24
-
-The first part before the '/' is the IP address and the part after the '/' is the CIDR
+192.168.1.137
 
 Go to another Linux computer, open a terminal and type:
 
@@ -84,6 +82,24 @@ search samdom.example.com
 
 Does search show your dns domain ?
 
+If it doesn't you can use 'nmcli' to add it:
+
+First you need to know what 'connection' to modify (this is where doing the install over SSH is a good idea, cut & paste)
+
+nmcli | grep 'connected' | awk -F ':' '{print $2}' | sed 's/ connected to //' | grep -v 'lo'
+
+That command pipes the output of nmcli through awk, sed and grep to give you the connections name, which will probably be:
+
+Wired connection 1
+
+Using that connection name, you can now add the 'search' domain to /etc/resolv.conf
+
+sudo nmcli c modify 'Wired connection 1' +ipv4.dns-search samdom.example.com
+
+NOTE: the 'search' domain is the Active Directory DNS domain.
+
+Provide the password for your user when prompted.
+
 cat /etc/hosts
 
 It will probably look like this:
@@ -98,7 +114,9 @@ ff00::0 ip6-mcastprefix
 ff02::1 ip6-allnodes
 ff02::2 ip6-allrouters
 
-If it does, open /etc/hosts in your favourite editor and make it look like this, by adding the DNS domain to the '127.0.1.1' line:
+The important line is the one that starts '127.0.1.1', if it just contains the computer short hostname (there are no dots in it), then you need to add the computers FQDN (short_hostname.DNS_domain)
+
+If you need to add the DNS domain, open /etc/hosts in your favourite editor and make it look like this, by adding the DNS domain to the '127.0.1.1' line:
 
 127.0.0.1	localhost
 127.0.1.1	lm223.samdom.example.com lm223
@@ -220,7 +238,20 @@ Stop the running Samba services, then mask nmbd
 sudo systemctl stop nmbd smbd winbind
 sudo systemctl mask nmbd
 
-You should be able to ping a DC by its short hostname, if not, find out why.
+You should be able to ping your AD DCs by their short hostname e.g.
+
+ping -c1 dc03
+
+It should return something like this:
+
+PING dc03.samdom.example.com (192.168.1.5) 56(84) bytes of data.
+64 bytes from dc03.samdom.example.com (192.168.1.5): icmp_seq=1 ttl=64 time=297 ms
+
+--- dc03.samdom.example.com ping statistics ---
+1 packets transmitted, 1 received, 0% packet loss, time 0ms
+rtt min/avg/max/mdev = 296.687/296.687/296.687/0.000 ms
+
+If you get 'Name or service not known' returned or other error, you need to find out why, it could be a firewall or something similar. You must be able to connect to your AD DCs.
 
 adminuser@lm223:~$ ping -c1 dc01
 PING dc01.samdom.example.com (192.168.1.2) 56(84) bytes of data.
@@ -232,13 +263,13 @@ rtt min/avg/max/mdev = 2.046/2.046/2.046/0.000 ms
 
 The final thing to do before joining the domain is to ensure that time is in sync with the AD domain.
 
-Kerberos only works if the date and time of the computer joining AD are the same as the AD.
+Kerberos only works if the time skew of the computer joining AD is within 5 minutes of the AD domain.
 
 Edit /etc/systemd/timesyncd.conf so that the [Time] section looks like this:
 
 [Time]
 NTP=dc01.samdom.example.com
-FallbackNTP=0.debian.pool.ntp.org 1.debian.pool.ntp.org 2.debian.pool.ntp.org 3.debian.pool.ntp.org
+FallbackNTP=ntp.ubuntu.com
 
 NOTE: Replace 'dc01.samdom.example.com' with the FQDN of one of your AD DC's
 
@@ -328,4 +359,28 @@ cli_rpc_pipe_open_noauth: rpc_pipe_bind for pipe srvsvc failed with error NT_STA
 Just rerun the command again.
 
 If you have got this far, congratulations, you have a working Unix domain member.
+
+Set up lightdm to allow your AD users to logon:
+
+echo '[Seat:*]' | sudo tee /etc/lightdm/lightdm.conf
+echo 'greeter-hide-users=false' | sudo tee -a /etc/lightdm/lightdm.conf
+echo 'greeter-show-manual-login=true' | sudo tee -a /etc/lightdm/lightdm.conf
+
+Run 'sudo pam-auth-update'
+A box should open, headed 'PAM configuration', use the down arrow key to get to this line:
+
+[ ] Create home directory on login
+
+Press the spacebar
+
+It should now look like this:
+
+[*] Create home directory on login
+
+Press the 'tab' key which should highlight <OK>
+
+Press the 'enter' key and then reboot.
+
+The login screen should now have an additional item 'Login', click this, enter your Active Directory users name, for example 'fred', when prompted enter your users password.
+You should get logged in as the Active Directory user.
 
